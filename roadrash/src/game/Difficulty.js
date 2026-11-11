@@ -26,7 +26,7 @@ export const DEFAULT_DIFFICULTY = 'medium';
  *  rbAhead     rubber band: slow-down at 250 m (or more) ahead of the best human, as a share of speed
  *  rbBehind    rubber band: speed-up at 250 m (or more) behind the best human
  *  mistakeEvery  mean seconds between mistakes (brake too early / run wide); 0 = never
- *  weapon      cumulative cut-offs [punch, baton] of a rival's fixed random draw (the rest carry the chain)
+ *  weapon      cut-offs of a rival's fixed random draw: below the second value the rival punches, above it kicks
  */
 export const DIFFICULTY = {
   easy: {

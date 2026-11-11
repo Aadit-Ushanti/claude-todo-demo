@@ -128,7 +128,7 @@ export function assignBikes(opts = {}) {
   return out;
 }
 
-const WEAPON_IDS = ['punch', 'baton', 'chain'];
+const WEAPON_IDS = ['punch', 'kick'];
 
 /** Scale on the rivals' straight-line pace (m/s): SPEED_SCALE, like the bikes' top speeds and the traffic (they ride at most 95 % of their top speed, so a rival holds the same share of its top speed as before and passes the traffic at the same relative speed). */
 const CRUISE_SCALE = SPEED_SCALE;
@@ -136,7 +136,7 @@ const CRUISE_SCALE = SPEED_SCALE;
 /**
  * A rival's personality: deterministic from the slot only.
  * @param {number} slot grid slot 0..14
- * @param {string} [difficulty] level id; only the weapon mix depends on it (harder = more batons and chains)
+ * @param {string} [difficulty] level id; only the weapon mix depends on it (harder = more kickers)
  * @returns {{slot:number, specId:string, cruise:number, aggression:number, weapon:string, laneD:number, cornerG:number, brakeG:number, wobble:number}}
  *   cruise: m/s the rider holds on a clear straight; aggression 0..1; laneD: preferred lateral offset (negative = right of centre);
  *   cornerG / brakeG: share of the bike's lean-limited cornering / braking capability it uses
@@ -148,7 +148,7 @@ export function personality(slot, difficulty = 'medium') {
   const aggression = 0.15 + 0.8 * r();
   const w = r();
   const cut = difficultyParams(difficulty).weapon;
-  const weapon = w < cut[0] ? WEAPON_IDS[0] : w < cut[1] ? WEAPON_IDS[1] : WEAPON_IDS[2];
+  const weapon = w < cut[1] ? WEAPON_IDS[0] : WEAPON_IDS[1]; // most rivals punch; the share of kickers grows with the level
   return {
     slot, specId, cruise, aggression, weapon,
     laneD: -0.9 - 2.5 * r(),

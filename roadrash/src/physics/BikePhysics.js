@@ -109,19 +109,19 @@ export const BIKE_SPECS = {
     mass: 295, power: 59260 * K * K, topKmh: 183.3 * K, crr: 0.015 * K, wheelbase: 1.45, brake: 9.5 * K, grip: 1.25,
     maxLean: 0.785, leanRate: 3.8, leanAccel: 36, tractionFrac: 0.5056065239551478 * K,
     suspFreq: 2.2, suspDamp: 0.5, travel: 0.14,
-    hsLeanLoss: 0.31, health: 100.6, staggerMul: 1, knock: 1, tempo: 0.97, tag: 'ST',
+    hsLeanLoss: 0.31, health: 100.6, staggerMul: 1, knock: 1, tempo: 1.06, tag: 'ST',
   }),
   sport: makeSpec('sport', 'Sport', {
     mass: 255.923, power: 72674 * K * K, topKmh: 187.2 * K, crr: 0.014 * K, wheelbase: 1.4, brake: 10.5 * K, grip: 1.22,
     maxLean: 0.795, leanRate: 3.3, leanAccel: 28, tractionFrac: 0.5 * K,
     suspFreq: 2.6, suspDamp: 0.55, travel: 0.12,
-    hsLeanLoss: 0.305, health: 99.65, staggerMul: 1.276, knock: 1.149, tempo: 0.924, tag: 'SP',
+    hsLeanLoss: 0.305, health: 99.65, staggerMul: 1.15, knock: 1.149, tempo: 0.924, tag: 'SP',
   }),
   chopper: makeSpec('chopper', 'Cruiser', {
     mass: 379.001, power: 71058 * K * K, topKmh: 178.6 * K, crr: 0.018 * K, wheelbase: 1.95, brake: 9 * K, grip: 1.15,
     maxLean: 0.78, leanRate: 2.6, leanAccel: 22, tractionFrac: 0.5495723086468999 * K,
     suspFreq: 1.7, suspDamp: 0.45, travel: 0.16,
-    hsLeanLoss: 0.3, health: 100.8, staggerMul: 0.875, knock: 1.081, tempo: 1.24, tag: 'CR',
+    hsLeanLoss: 0.3, health: 100.8, staggerMul: 0.875, knock: 1.081, tempo: 1.2, tag: 'CR',
   }),
 };
 
@@ -131,10 +131,13 @@ export const BIKE_SPECS = {
  * reach / arc are the forgiving values a human's swing uses (reach +30 %, a wider sector so a rival half a bike length ahead or behind still counts);
  * reach0 / arc0 are the old tighter ones, used by the AI riders (their attack rate and what they land are unchanged).
  */
+/** Wheel zones for the kick, along the victim's length from its centre (m): centres at +-at, half-length half. */
+export const KICK_WHEEL = { at: 0.7, half: 0.3 };
 export const WEAPONS = {
   punch: { reach: 1.1, reach0: 0.85, damage: 5, arc: 1.25, arc0: 0.9, windup: 0.12, impulse: 140, stagger: 0.35 },
-  baton: { reach: 1.95, reach0: 1.5, damage: 9, arc: 1.4, arc0: 1.2, windup: 0.25, impulse: 260, stagger: 0.6 },
-  chain: { reach: 2.6, reach0: 2.0, damage: 13, arc: 1.5, arc0: 1.4, windup: 0.4, impulse: 340, stagger: 0.9 },
+  // The kick reaches further and is slower than the punch. Landed on the body it does exactly what a punch does; landed on a
+  // wheel (front or rear, see KICK_WHEEL) it also wobbles the bike and shoves it sideways (shove: m/s of sideways speed).
+  kick: { reach: 1.75, reach0: 1.4, damage: 5, arc: 1.35, arc0: 1.15, windup: 0.2, impulse: 140, stagger: 0.35, shove: 3.4, wheelStagger: 0.8 },
 };
 
 /** Flat ground used when no track is supplied. */
@@ -548,6 +551,14 @@ export function meleeHit(attacker, victim, weaponId, side, forgiving = true) {
   const passing = Math.abs(rvx * afx + rvz * afz);
   const relSpeed = Math.sqrt(closing * closing + passing * passing);
 
+  // where a kick lands along the victim's bike: the attacker's foot goes straight out sideways, so it is the attacker's own
+  // position measured along the victim's length. Within KICK_WHEEL.half of a wheel centre (+-KICK_WHEEL.at) it is a wheel kick.
+  let wheel = false;
+  if (w.shove) {
+    const vfx = -Math.sin(victim.yaw), vfz = -Math.cos(victim.yaw);
+    const along = (attacker.pos.x - victim.pos.x) * vfx + (attacker.pos.z - victim.pos.z) * vfz;
+    wheel = Math.abs(Math.abs(along) - KICK_WHEEL.at) <= KICK_WHEEL.half;
+  }
   const dmg = w.damage * (1 + Math.min(relSpeed / (12 * K), 5)); // relative speeds are judged as a share of the old (1 / K) speeds
   const J = w.impulse * (1 + Math.min(relSpeed / (10 * K), 4));
   let ix = dx * 0.85 + nx * 0.15, iz = dz * 0.85 + nz * 0.15;
@@ -556,7 +567,10 @@ export function meleeHit(attacker, victim, weaponId, side, forgiving = true) {
   return {
     damage: dmg,
     impulse: { x: ix, y: 0.1 * J, z: iz },
-    stagger: w.stagger * (1 + Math.min(relSpeed / (20 * K), 1.5)),
+    stagger: (wheel ? w.wheelStagger : w.stagger) * (1 + Math.min(relSpeed / (20 * K), 1.5)),
+    // a kick on a wheel: sideways shove away from the attacker (m/s); null for a punch or a kick on the body
+    shove: wheel ? { x: dx * w.shove, z: dz * w.shove } : null,
+    wheel,
     relSpeed,
     point: { x: bpx, y: bpy, z: bpz },
   };
@@ -579,12 +593,28 @@ export function contactShare(m, mo) { return 0.5 + mo / (m + mo); }
  * @param {{damage:number,impulse:{x:number,y:number,z:number},stagger:number}} hit result of meleeHit
  * @returns {void}
  */
+/** Seconds a rider stays off balance after a punch / a kick (see Race.js: leaving the tarmac while off balance is a wipeout). */
+export const OFF_BALANCE_PUNCH = 1.0, OFF_BALANCE_KICK = 2.2;
+/** Yaw-rate kick (rad/s per m/s of shove) a wheel kick adds, turning the nose away from the attacker. */
+export const KICK_YAW = 0.035;
 export function applyHit(victim, hit) {
   const v = victim;
   const m = v.spec.mass;
   v.health = Math.max(0, v.health - hit.damage);
   v.stagger = Math.max(v.stagger, hit.stagger * v.spec.staggerMul);
+  // off balance for a while after any blow (longer after a wheel kick): Race.js wipes out an off-balance rider who leaves the tarmac
+  v.offBal = Math.max(v.offBal || 0, hit.shove ? OFF_BALANCE_KICK : OFF_BALANCE_PUNCH);
   const c = Math.cos(v.yaw), s = Math.sin(v.yaw);
+  if (hit.shove) {
+    // a kick on a wheel: the bike is shoved sideways, away from the attacker, and its nose is turned a little the same way.
+    // A steadier bike (staggerMul < 1) is shoved less. The kick never knocks the rider off by itself: the traffic, the
+    // wall or the roadside do that.
+    const sL = hit.shove.x * -c + hit.shove.z * s; // along left, m/s (the same for every bike: the heavier bikes already wobble for a shorter time)
+    v.latVel += sL;
+    v.yawKick += sL * KICK_YAW;
+    if (v.health <= 0) v.crashed = true;
+    return;
+  }
   const rL = (hit.impulse.x * -c + hit.impulse.z * s) / m; // along left (m/s of the impulse before the speed scale)
   const rF = (hit.impulse.x * -s + hit.impulse.z * -c) / m; // along forward
   // the sideways shove (latVel, yaw kick, lean kick) is geometric (metres of the same road, quick lean): not scaled; the forward speed change is the same share of the (lower) speeds

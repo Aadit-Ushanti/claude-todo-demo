@@ -31,6 +31,8 @@ const AI_THINK_DT = 1 / 60; // the AI decides at most this often (effective 60 H
 const HITFX_T = 0.35; // seconds of predicted (visual only) stagger on a remote victim
 const REMOUNT_T = 3;
 const GHOST_T = 1.5;
+/** A remounting rider restarts this far (m) inside the right-hand edge of the tarmac. */
+const REMOUNT_EDGE = 0.9;
 const PLACE_EPS = 0.02; // metres: riders closer than this keep their order (the grid order at the start, stable side by side)
 const FINISH_GRACE_T = 20;
 const CAR_MASS = 1300;
@@ -177,7 +179,10 @@ function locate(race, r) {
 function remount(race, r, ahead = 0) {
   const b = r.bike, tr = race.track;
   const m = tr.sampleAt(Math.min(r.s + ahead, tr.length - 5), _sm);
-  b.pos.x = m.x; b.pos.z = m.z; b.pos.y = tr.heightAt(m.x, m.z);
+  // back on the bike at the right-hand edge of the road (not the middle), out of the way of the pack and the traffic;
+  // the rider is also a ghost for GHOST_T seconds
+  const dEdge = -(tr.halfWidth - REMOUNT_EDGE);
+  b.pos.x = m.x + m.hz * dEdge; b.pos.z = m.z - m.hx * dEdge; b.pos.y = tr.heightAt(b.pos.x, b.pos.z); b.offBal = 0;
   b.vel.x = 0; b.vel.y = 0; b.vel.z = 0; b.speed = 0; b.yaw = m.yaw; b.yawRate = 0; b.yawKick = 0;
   b.lean = 0; b.leanRate = 0; b.pitch = 0; b.slip = 0; b.drifting = false; b.latVel = 0; b.stagger = 0;
   b.airborne = false; b.crashed = false; b.wInit = false; b.accel = 0;
@@ -226,6 +231,7 @@ function swingAt(race, r, side, forgiving) {
     if (!h) continue;
     if (r.kind === 'ai' && v.kind === 'ai') { // rivals pull their punches against each other so the field does not wreck itself
       h.damage *= 0.5; h.stagger *= 0.5; h.impulse.x *= 0.35; h.impulse.y *= 0.35; h.impulse.z *= 0.35;
+      if (h.shove) { h.shove.x *= 0.35; h.shove.z *= 0.35; }
     }
     if (v.remote) {
       pushEvent(race, { type: 'hit', from: r.slot, to: v.slot, hit: h, id: ((++race.hitSeq) << 8) | (r.slot << 4) | v.slot });
@@ -301,24 +307,20 @@ function bikeContacts(race, a, b, dt) {
     if (aLoc) { A.latVel += k * (nx * lx + nz * lz) * 0.5 * contactShare(A.spec.mass, B.spec.mass); A.stagger = Math.max(A.stagger, 0.1 * A.spec.staggerMul); }
     if (bLoc) { const bl = Math.cos(B.yaw), bs = Math.sin(B.yaw); B.latVel -= k * (nx * -bl + nz * bs) * 0.5 * contactShare(B.spec.mass, A.spec.mass); B.stagger = Math.max(B.stagger, 0.1 * B.spec.staggerMul); }
   }
-  const tx = -sy, tz = -cy;
-  if (sevA.outcome === 'crash' && closing > 5 * K) {
-    // the faster rider along the contact normal crashes; both if very violent
-    const aSpeedN = A.vel.x * -nx + A.vel.z * -nz, bSpeedN = B.vel.x * nx + B.vel.z * nz;
-    const hitter = aSpeedN > bSpeedN ? a : b;
-    const other = hitter === a ? b : a;
-    if (!hitter.remote && hitter.ghost <= 0) {
-      hitter.lastImpulse.x = -nx * (hitter === a ? 1 : -1) * 20 * hitter.bike.spec.mass * 0.1; hitter.lastImpulse.z = 0;
-      hitter.lastEnergy = sevA.energy;
-      crashRider(race, hitter, 'bike');
+  // Bike-to-bike contact never wipes a rider out by itself (as in the original game): it costs speed and control.
+  // Wipeouts come from cars, the wall and running out of health; a wobbling rider is easy prey for all three.
+  const hard = sevA.outcome === 'crash' && closing > 5 * K;
+  if (side) {
+    if (hard) { // a hard side-swipe: a long wobble for both
+      if (aLoc && a.ghost <= 0) A.stagger = Math.max(A.stagger, 0.6 * A.spec.staggerMul);
+      if (bLoc && b.ghost <= 0) B.stagger = Math.max(B.stagger, 0.6 * B.spec.staggerMul);
     }
-    if (!other.remote && closing > 9 * K && other.ghost <= 0) { other.bike.stagger = Math.max(other.bike.stagger, 0.6); }
-    if (!other.remote && other.bike.speed < hitter.bike.speed + closing) other.bike.speed += Math.min(closing * 0.3, 3 * K);
   } else if (sevA.outcome !== 'none' || closing > 2 * K) {
-    const slow = a.bike.speed < b.bike.speed ? a : b; // rear-end: the faster one loses speed, the slower one gains
+    // rear touch: the faster rider loses most of the speed difference and wobbles, the one in front gets a small push
+    const slow = a.bike.speed < b.bike.speed ? a : b;
     const fast = slow === a ? b : a;
-    if (!fast.remote) { fast.bike.speed = Math.max(0, fast.bike.speed - closing * 0.4); fast.bike.stagger = Math.max(fast.bike.stagger, 0.25); }
-    if (!slow.remote) { slow.bike.speed += closing * 0.15; slow.bike.stagger = Math.max(slow.bike.stagger, 0.15); }
+    if (!fast.remote) { fast.bike.speed = Math.max(0, fast.bike.speed - closing * (hard ? 0.75 : 0.4)); fast.bike.stagger = Math.max(fast.bike.stagger, hard ? 0.5 : 0.25); }
+    if (!slow.remote) { slow.bike.speed += Math.min(closing * 0.15, 3 * K); slow.bike.stagger = Math.max(slow.bike.stagger, hard ? 0.25 : 0.15); }
   }
 }
 
@@ -687,6 +689,7 @@ export function stepRace(race, dt, localInputs) {
     } else b.boost = 1;
     stepBike(b, si, dt, track);
     if (r.ghost > 0) r.ghost -= dt;
+    if (b.offBal > 0) b.offBal -= dt;
   }
 
   // ---- track coordinates for everyone ----
@@ -735,6 +738,8 @@ export function stepRace(race, dt, localInputs) {
     const r = riders[i];
     if (r.remote || r.finished && r.kind === 'ai' && r.s >= track.length - 1) continue;
     if (r.bike.crashed) continue;
+    // off balance from a blow (a kick above all) and off the tarmac: thrown off the bike, as in the original game
+    if (r.bike.offBal > 0 && r.ghost <= 0 && racing && Math.abs(r.d) > track.halfWidth + 0.15) { r.lastEnergy = 4000; crashRider(race, r, 'shoved'); continue; }
     edges(race, r, dt);
   }
 

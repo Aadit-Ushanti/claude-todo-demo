@@ -16,7 +16,7 @@ export function createHud(root, handlers = {}) {
         <div class="hud-speed"><span data-k="speed">0</span><small>km/h</small></div>
         <div class="hud-health"><div class="hud-health-bar" data-k="health"></div></div>
         <div class="hud-weapons">
-          <span data-w="punch">PUNCH</span><span data-w="baton">BATON</span><span data-w="chain">CHAIN</span>
+          <span data-w="punch">PUNCH</span><span data-w="kick">KICK</span>
           <em data-k="side">AUTO</em>
         </div>
       </div>

@@ -229,7 +229,7 @@ export function createAudio() {
         tone('sine', 140 * k, 50, t, 0.2, 0.8);
         burst('lowpass', 700, 200, 0.7, t, 0.12, 0.5);
         break;
-      case 'hit': sfx(d && d.weapon === 'chain' ? 'chain' : d && d.weapon === 'baton' ? 'baton' : 'punch', d); break;
+      case 'hit': sfx(d && d.weapon === 'kick' ? 'baton' : 'punch', d); break; // the kick uses the heavier thud
       case 'bump':
         burst('lowpass', 700, 250, 0.7, t, 0.12, 0.5);
         tone('square', 120, 70, t, 0.12, 0.25);

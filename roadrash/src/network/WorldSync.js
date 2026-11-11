@@ -27,9 +27,9 @@ export const WORLD_RIDER_BYTES = 27;
 /** Maximum hit-car ids carried per packet (2 bytes each). */
 export const MAX_HIT_CARS = 64;
 
-/** Rider flag bits in the world packet. bits 4-5: weapon (0 none, 1 punch, 2 baton, 3 chain). */
+/** Rider flag bits in the world packet. bits 4-5: weapon (0 none, 1 punch, 2 kick). */
 export const FLAG = { DRIFTING: 1, CRASHED: 2, ATTACKING: 4, SIDE_RIGHT: 8 };
-const WEAPONS = [null, 'punch', 'baton', 'chain'];
+const WEAPONS = [null, 'punch', 'kick', 'kick'];
 const PHASES = ['grid', 'countdown', 'racing', 'finished'];
 
 function wrapPi(a) {

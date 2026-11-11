@@ -327,10 +327,11 @@ export function createRenderer(canvas) {
     const v = fx.update(bike, dt, { nearPass: near, airborne: !!bike.airborne, crashed: !!bike.crashed });
     // every speed effect derives from the perceived speed v (not the raw physics speed)
     const vc = Math.min(v, 1.25), mul = (1 + 0.8 * (bike.drifting ? 1 : 0)) * (bike.stagger > 0 ? 2.2 : 1);
-    cp.fov = 58 + 37 * vc;
-    cp.shake = (0.004 + 0.05 * vc * vc) * mul;
+    // the view widens only a little and the camera stays close, so the bike and rider stay big on screen at every speed
+    cp.fov = 56 + 10 * Math.min(vc, 1.25);
+    cp.shake = (0.004 + 0.06 * vc * vc) * mul;
     cp.lag = 0.08 + 0.16 * Math.min(vc, 1) + (bike.drifting ? 0.08 : 0);
-    cp.dist = 4.2 + 1.6 * Math.min(vc, 1.1);
+    cp.dist = 4.2 - 0.25 * Math.min(vc, 1.1);
     const bx = bike.pos.x, by = bike.pos.y, bz = bike.pos.z;
     if (track) { track.toTrack(bx, bz, camS, tt); camS = tt.s; }
     if (!camInit || Math.abs(camPos.x - bx) + Math.abs(camPos.z - bz) > 60) {

@@ -1,7 +1,7 @@
 const HOLD = { ArrowUp: 'throttle', KeyW: 'throttle', ArrowDown: 'brake', KeyS: 'brake', ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right' };
-const ATTACK = { KeyJ: 'punch', KeyK: 'baton', KeyL: 'chain' };
+const ATTACK = { KeyJ: 'punch', KeyK: 'kick' };
 const SIDE = { KeyQ: 1, KeyE: -1 };
-const PAD_ATTACK = { 0: 'punch', 2: 'baton', 3: 'chain' };
+const PAD_ATTACK = { 0: 'punch', 2: 'kick' };
 const MANUAL_SIDE_MS = 1500;
 const STEER_TAP = 0.3; // share of full steer a quick press reaches
 const STEER_FULL_S = 1.0; // extra hold time (s) to grow from STEER_TAP to full steer
@@ -148,8 +148,7 @@ export function createInput(target) {
     // bottom corner (same buttons for either thumb; the swing side is automatic); tilt switch bottom centre
     const atk = (sd, cls) => `<div class="tc-atk ${cls}">` +
       `<button data-a="punch" data-as="${sd}">PUNCH</button>` +
-      `<button data-a="baton" data-as="${sd}">BATON</button>` +
-      `<button data-a="chain" data-as="${sd}">CHAIN</button></div>`;
+      `<button data-a="kick" data-as="${sd}">KICK</button></div>`;
     overlay.innerHTML =
       atk(1, 'tc-atk-l') + atk(-1, 'tc-atk-r') +
       '<div class="tc-pedal-l"><button data-h="throttle" class="tc-gas">GAS</button></div>' +

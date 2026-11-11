@@ -212,7 +212,7 @@ function applyRemotes(now) {
 }
 
 const netState = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, yawRate: 0, lean: 0, flags: 0, health: 100 };
-const WEAPON_BITS = { punch: 1, baton: 2, chain: 3 };
+const WEAPON_BITS = { punch: 1, kick: 2 };
 function pushLocalState() {
   const r = race.riders[mySlot], b = r.bike, a = r.input.attack;
   netState.x = b.pos.x; netState.y = b.pos.y; netState.z = b.pos.z;
