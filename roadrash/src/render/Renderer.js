@@ -215,9 +215,17 @@ export function createRenderer(canvas) {
     if (changed) { const t = track; disposeWorlds(); clearTextureCache(); clearEnvTextures(); clearSpecies(); if (t) setTrack(t); }   // materials, texture sizes and LOD radii depend on the tier
   }
 
+  // Screen fit: the drawing size always follows the canvas's real on-screen box. Phones do not reliably send `resize` when they
+  // rotate, hide their toolbars or go fullscreen, so render() also compares the box every frame (two integer reads) and calls this.
+  let fitW = 0, fitH = 0, fitDpr = 0;
   function resize() {
     const w = canvas.clientWidth || window.innerWidth;
     const h = canvas.clientHeight || window.innerHeight;
+    if (!(w > 0 && h > 0)) return;
+    fitW = w; fitH = h; fitDpr = window.devicePixelRatio || 1;
+    applyPixelRatio();
+    // one UI scale for every screen: HUD and touch buttons keep their proportion against a 390 px reference short side
+    try { document.documentElement.style.setProperty('--ui', String(clamp(Math.min(w, h) / 390, 0.8, 1.5).toFixed(3))); } catch (e) { /* no document */ }
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
@@ -228,6 +236,9 @@ export function createRenderer(canvas) {
   const _v3cam = new THREE.Vector3();
   const _focus = new THREE.Vector3();
   window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', resize);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+  if (typeof ResizeObserver === 'function') new ResizeObserver(resize).observe(canvas);
   applyPixelRatio();
   post.overlay.visible = quality === 'medium';
   resize();
@@ -298,6 +309,7 @@ export function createRenderer(canvas) {
   function render(bike, dtReal) {
     const dt = clamp(dtReal || 0, 0, 0.1);
     frameDt = dt > 0 ? dt : 1 / 60;
+    if (canvas.clientWidth !== fitW || canvas.clientHeight !== fitH || (window.devicePixelRatio || 1) !== fitDpr) resize();
     if (bikeTexQueue && bikeTexQueue.length) { for (let i = 0; i < 2 && bikeTexQueue.length; i++) { const t = bikeTexQueue.pop(); if (t.image) renderer.initTexture(t); } }
     time += dt;
     renderer.info.reset();

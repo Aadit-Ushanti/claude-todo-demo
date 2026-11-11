@@ -3,6 +3,8 @@ const ATTACK = { KeyJ: 'punch', KeyK: 'baton', KeyL: 'chain' };
 const SIDE = { KeyQ: 1, KeyE: -1 };
 const PAD_ATTACK = { 0: 'punch', 2: 'baton', 3: 'chain' };
 const MANUAL_SIDE_MS = 1500;
+const STEER_TAP = 0.3; // share of full steer a quick press reaches
+const STEER_FULL_S = 1.0; // extra hold time (s) to grow from STEER_TAP to full steer
 
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 
@@ -20,7 +22,7 @@ export function createInput(target) {
   const padPrev = {};
   const out = { throttle: 0, brake: 0, steer: 0, attack: null, attackSide: 1, sideAuto: true };
   let touchSteer = 0;
-  let ramp = 0, rampAt = 0; // eased on/off steer (keyboard and touch buttons)
+  let ramp = 0, rampAt = 0, holdT = 0; // eased on/off steer (keyboard and touch buttons)
   let side = 1;
   let sideAt = -1e9; // time of the last manual side choice
   let sideMode = 0; // touch SIDE button: 0 auto, 1 left, -1 right
@@ -50,7 +52,7 @@ export function createInput(target) {
     for (const k in kb) kb[k] = false;
     for (const k in tc) tc[k] = false;
     held.clear();
-    touchSteer = 0; ramp = 0;
+    touchSteer = 0; ramp = 0; holdT = 0;
   };
 
   // ---- touch buttons: every finger is tracked by its pointer id, so a finger that slides off a button, or a second
@@ -68,13 +70,14 @@ export function createInput(target) {
   const onBtnDown = (e) => {
     const b = btnAt(e);
     if (!b) return;
+    if (b.dataset.tilt) return; // handled on click: iOS only grants motion access from a real tap (click), never from pointerdown
     e.preventDefault();
     if (b.dataset.h) { held.set(e.pointerId, b.dataset.h); syncHeld(); }
     else if (b.dataset.a) { pending = b.dataset.a; pendingSide = Number(b.dataset.as) || 0; }
     else if (b.dataset.side) {
       sideMode = sideMode === 0 ? 1 : sideMode === 1 ? -1 : 0;
       b.textContent = sideMode === 0 ? 'SIDE: AUTO' : sideMode === 1 ? 'SIDE: LEFT' : 'SIDE: RIGHT';
-    } else if (b.dataset.tilt) toggleTilt();
+    }
   };
   // a held finger that slides onto the neighbouring hold button (left <-> right, gas <-> brake) switches to it
   const onBtnMove = (e) => {
@@ -86,7 +89,7 @@ export function createInput(target) {
   const onBtnUp = (e) => { if (held.delete(e.pointerId)) syncHeld(); };
 
   // ---- tilt steering (phone gyroscope). Off until the player turns it on; needs a secure page that allows motion sensors.
-  let tiltOn = false, tiltSteer = 0, tiltSeen = false, tiltBtn = null, tiltTimer = 0;
+  let tiltOn = false, tiltFlip = false, tiltSteer = 0, tiltSeen = false, tiltBtn = null, tiltTimer = 0;
   const TILT_FULL = 22, TILT_DEAD = 2; // degrees of roll for full steer / ignored around level
   const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* storage blocked */ } };
@@ -97,7 +100,8 @@ export function createInput(target) {
     // roll of the screen about the viewing axis, positive = right edge down
     const roll = ang === 90 ? e.beta : (ang === 270 || ang === -90) ? -e.beta : e.gamma;
     const m = Math.abs(roll) < TILT_DEAD ? 0 : (Math.abs(roll) - TILT_DEAD) / (TILT_FULL - TILT_DEAD);
-    tiltSteer = clamp(-Math.sign(roll) * m, -1, 1); // steer + = left
+    // m^1.5: fine control near level, full steer at TILT_FULL degrees
+    tiltSteer = clamp(-Math.sign(roll) * Math.pow(Math.min(1, m), 1.5), -1, 1) * (tiltFlip ? -1 : 1); // steer + = left
   };
   const tiltLabel = (t) => { if (tiltBtn) tiltBtn.textContent = t; };
   const stopTilt = (label) => {
@@ -115,12 +119,17 @@ export function createInput(target) {
     tiltOn = true; tiltSeen = false;
     window.addEventListener('deviceorientation', onTilt);
     if (overlay) overlay.classList.add('tilt');
-    tiltLabel('TILT: ON');
+    tiltLabel(tiltFlip ? 'TILT: ON (FLIPPED)' : 'TILT: ON');
     clearTimeout(tiltTimer);
     // some pages (embedded viewers) never deliver sensor events: fall back to the buttons and say so
     tiltTimer = setTimeout(() => { if (tiltOn && !tiltSeen) stopTilt('TILT: N/A'); }, 1500);
   };
-  const toggleTilt = () => { if (tiltOn) { stopTilt(); lsSet('rr.tilt', '0'); } else { lsSet('rr.tilt', '1'); startTilt(); } };
+  // one button cycles OFF -> ON -> ON (FLIPPED) -> OFF; "flipped" reverses the direction for phones that report it the other way
+  const toggleTilt = () => {
+    if (!tiltOn) { tiltFlip = false; lsSet('rr.tilt', '1'); startTilt(); }
+    else if (!tiltFlip) { tiltFlip = true; lsSet('rr.tilt', '2'); tiltLabel('TILT: ON (FLIPPED)'); }
+    else { tiltFlip = false; stopTilt(); lsSet('rr.tilt', '0'); }
+  };
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
@@ -135,7 +144,7 @@ export function createInput(target) {
     overlay = document.createElement('div');
     overlay.className = 'touch-controls';
     overlay.hidden = true;
-    // layout: GAS bottom left, BRAKE bottom right, one set of attacks at mid height on each side (same buttons for either thumb; the swing side is automatic),
+    // layout: GAS bottom left; steer arrows and BRAKE bottom right; one set of attacks at mid height on each side (same buttons for either thumb; the swing side is automatic),
     // steer arrows inside the pedals (dimmed while tilt steering is on), tilt switch bottom centre
     const atk = (sd, cls) => `<div class="tc-atk ${cls}">` +
       `<button data-a="punch" data-as="${sd}">PUNCH</button>` +
@@ -143,14 +152,19 @@ export function createInput(target) {
       `<button data-a="chain" data-as="${sd}">CHAIN</button></div>`;
     overlay.innerHTML =
       atk(1, 'tc-atk-l') + atk(-1, 'tc-atk-r') +
-      '<div class="tc-pedal-l"><button data-h="throttle" class="tc-gas">GAS</button><button data-h="left" class="tc-left" aria-label="Steer left">&#9664;</button></div>' +
-      '<div class="tc-pedal-r"><button data-h="right" class="tc-right" aria-label="Steer right">&#9654;</button><button data-h="brake" class="tc-brake">BRAKE</button></div>' +
+      '<div class="tc-pedal-l"><button data-h="throttle" class="tc-gas">GAS</button></div>' +
+      '<div class="tc-pedal-r">' +
+      '<button data-h="left" class="tc-left" aria-label="Steer left">&#9664;</button>' +
+      '<button data-h="right" class="tc-right" aria-label="Steer right">&#9654;</button>' +
+      '<button data-h="brake" class="tc-brake">BRAKE</button></div>' +
       '<button data-tilt="1" class="tc-tilt">TILT: OFF</button>';
     overlay.addEventListener('pointerdown', onBtnDown);
     tiltBtn = overlay.querySelector('.tc-tilt');
+    tiltBtn.addEventListener('click', (e) => { e.preventDefault(); toggleTilt(); });
     overlay.addEventListener('contextmenu', (e) => e.preventDefault());
     (target.parentElement || document.body).appendChild(overlay);
-    if (lsGet('rr.tilt') === '1' && !(typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function')) startTilt();
+    tiltFlip = lsGet('rr.tilt') === '2';
+    if ((lsGet('rr.tilt') === '1' || tiltFlip) && !(typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function')) startTilt();
   }
 
   Object.assign(api, {
@@ -177,12 +191,15 @@ export function createInput(target) {
           padPrev[key] = down;
         }
       }
-      // keys and steer buttons are on/off: ease the value in (about 0.25 s to full) and out (about 0.1 s) so a tap is a nudge
+      // keys and steer buttons are on/off, so the hold time sets how hard the bike turns: a tap is a nudge (up to 30 % steer),
+      // and steer grows to full only while the press is held for about a second. Releasing or reversing lets go quickly.
       const t = now(), dtS = Math.min(0.1, Math.max(0, (t - rampAt) / 1000));
       rampAt = t;
       const want = ((kb.left || tc.left) ? 1 : 0) - ((kb.right || tc.right) ? 1 : 0);
+      if (want !== 0 && want * ramp >= 0) holdT += dtS; else holdT = 0;
+      const cap = want === 0 ? 0 : STEER_TAP + (1 - STEER_TAP) * clamp((holdT - 0.12) / STEER_FULL_S, 0, 1);
       const rate = (want === 0 || want * ramp < 0) ? 10 : 4;
-      ramp += clamp(want - ramp, -rate * dtS, rate * dtS);
+      ramp += clamp(want * cap - ramp, -rate * dtS, rate * dtS);
       const kbSteer = ramp;
       touchSteer = tiltOn ? tiltSteer : 0;
       out.steer = [kbSteer, touchSteer, padSteer].reduce((m, v) => (Math.abs(v) > Math.abs(m) ? v : m), 0);
