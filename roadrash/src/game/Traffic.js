@@ -1,10 +1,13 @@
 // Sparse civilian traffic in both directions. Pure logic, deterministic from (seed, track).
 // Until a car is hit its state is a pure function of race time, so every device agrees without
 // network traffic. Cars are generated as two chains (with the race, oncoming) whose speeds are
-// ordered so a car never catches the one ahead of it in its own lane. Cars outside the track
+// ordered so a car never catches the one ahead of it in its own lane. Speeds are 60-90 km/h times SPEED_SCALE, like the bikes', so the closing
+// speeds keep their proportion. Cars outside the track
 // have active=false and are parked far below the ground.
 
-const MIN_V = 60 / 3.6, MAX_V = 90 / 3.6;
+import { SPEED_SCALE } from '../physics/BikePhysics.js';
+
+const MIN_V = 60 * SPEED_SCALE / 3.6, MAX_V = 90 * SPEED_SCALE / 3.6;
 const LANE_SHARE = 0.5; // cars drive in the middle of their lane: half of the paved half-width from the centre line (2.5 m on the 5 m road; it was a fixed 2.1 m on the 4.2 m one)
 const WRECK_T = 8; // seconds a hit car stays on the road before it is cleared
 const HORIZON = 360; // seconds of race time the chains cover
@@ -118,7 +121,7 @@ export function stepTraffic(cars, t, dt) {
     if (!c.active) continue;
     const sp = Math.hypot(c.vel.x, c.vel.z);
     if (sp > 0.05) {
-      const k = Math.max(0, sp - 5 * dt) / sp;
+      const k = Math.max(0, sp - 5 * SPEED_SCALE * dt) / sp;
       c.vel.x *= k; c.vel.z *= k;
     } else { c.vel.x = 0; c.vel.z = 0; }
     c.pos.x += c.vel.x * dt; c.pos.z += c.vel.z * dt;

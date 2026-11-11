@@ -22,6 +22,7 @@ export const DEFAULT_DIFFICULTY = 'medium';
  *  swingCd     multiplier on the pause between swings
  *  swingP      multiplier on the chance a possible swing at a HUMAN is thrown (times the rider's aggression)
  *  defend      0..1 how strongly a rider blocks the line of a human right behind it
+ *  match       share (0..1) of the speed difference to a human within 50 m that a rival closes (see RivalAI, pack behaviour)
  *  rbAhead     rubber band: slow-down at 250 m (or more) ahead of the best human, as a share of speed
  *  rbBehind    rubber band: speed-up at 250 m (or more) behind the best human
  *  mistakeEvery  mean seconds between mistakes (brake too early / run wide); 0 = never
@@ -30,15 +31,15 @@ export const DEFAULT_DIFFICULTY = 'medium';
 export const DIFFICULTY = {
   easy: {
     id: 'easy', label: 'Easy', pace: 0.82, corner: 0.74, brake: 0.82, clearK: 1.3, pullK: 1.25, laneCost: 1.4, wobble: 1.8, laneRate: 2.4,
-    swingStart: 12, swingCd: 1.9, swingP: 0.4, defend: 0, rbAhead: 0.2, rbBehind: 0.08, mistakeEvery: 24, weapon: [0.78, 0.96],
+    swingStart: 12, swingCd: 1.9, swingP: 0.4, defend: 0, match: 0.97, rbAhead: 0.32, rbBehind: 0.12, mistakeEvery: 24, weapon: [0.78, 0.96],
   },
   medium: {
     id: 'medium', label: 'Medium', pace: 0.9, corner: 0.87, brake: 0.92, clearK: 1, pullK: 1, laneCost: 1, wobble: 1, laneRate: 3.5,
-    swingStart: 6, swingCd: 1, swingP: 1, defend: 0.25, rbAhead: 0.08, rbBehind: 0.08, mistakeEvery: 0, weapon: [0.45, 0.78],
+    swingStart: 6, swingCd: 1, swingP: 1, defend: 0.25, match: 0.97, rbAhead: 0.24, rbBehind: 0.24, mistakeEvery: 0, weapon: [0.45, 0.78],
   },
   hard: {
     id: 'hard', label: 'Hard', pace: 1.06, corner: 1.05, brake: 1.03, clearK: 0.9, pullK: 0.9, laneCost: 0.6, wobble: 0.4, laneRate: 3.8,
-    swingStart: 3, swingCd: 0.55, swingP: 1.7, defend: 0.8, rbAhead: 0, rbBehind: 0.04, mistakeEvery: 0, weapon: [0.2, 0.55],
+    swingStart: 3, swingCd: 0.55, swingP: 1.7, defend: 0.8, match: 0.95, rbAhead: 0, rbBehind: 0.06, mistakeEvery: 0, weapon: [0.2, 0.55],
   },
 };
 

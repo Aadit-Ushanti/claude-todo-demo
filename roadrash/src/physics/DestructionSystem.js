@@ -125,9 +125,10 @@ function bikeLocalToWorld(bike, f, l, u, out) {
  * @param {{vel:{x:number,y:number,z:number}, lean?:number, spec?:{mass:number}}} bike
  * @param {object|null} other other bike, or null for a static wall
  * @param {{x:number,y:number,z:number}} normal contact normal pointing toward `bike`
+ * @param {number} [speedScale] the game's speed scale (BikePhysics.SPEED_SCALE): speeds are judged as speed / speedScale, so the thresholds hold at the same share of top speed (default 1: plain joules)
  * @returns {{relSpeed:number, energy:number, outcome:'none'|'wobble'|'crash'}}
  */
-export function crashSeverity(bike, other, normal) {
+export function crashSeverity(bike, other, normal, speedScale = 1) {
   const nl = vlen(normal.x, normal.y, normal.z) || 1;
   const nx = normal.x / nl, ny = normal.y / nl, nz = normal.z / nl;
   let rx = bike.vel.x, ry = bike.vel.y, rz = bike.vel.z;
@@ -137,7 +138,8 @@ export function crashSeverity(bike, other, normal) {
   const relSpeed = closing > 0 ? closing : 0;
   const m1 = (bike.spec && bike.spec.mass) || 200;
   const mu = other ? (m1 * ((other.spec && other.spec.mass) || 200)) / (m1 + ((other.spec && other.spec.mass) || 200)) : m1;
-  const energy = 0.5 * mu * relSpeed * relSpeed;
+  const sk = relSpeed / speedScale; // the thresholds are in the old units: a crash needs the same share of top speed as before
+  const energy = 0.5 * mu * sk * sk;
   const leanFactor = 1 + 1.5 * Math.abs(bike.lean || 0);
   const eff = energy * leanFactor;
   const outcome = eff >= CRASH_ENERGY ? 'crash' : eff >= WOBBLE_ENERGY ? 'wobble' : 'none';

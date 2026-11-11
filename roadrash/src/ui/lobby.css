@@ -164,3 +164,14 @@
 .bk-chopper { background: #6ecbff; }
 
 .lobby-bikeof { margin-right: 10px; font-size: 0.8rem; opacity: 0.85; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* audio controls */
+.rr-audio { display: flex; gap: 10px; align-items: center; }
+.rr-audio-mute { flex: 0 0 auto; min-width: 112px; }
+.rr-audio-mute.off { opacity: 0.7; }
+.rr-audio-vol { flex: 1 1 auto; min-width: 0; height: 36px; accent-color: #ff7a1a; touch-action: manipulation; }
+.rr-audio-vol:disabled { opacity: 0.4; }
+.lobby-row > .rr-audio { flex: 1 1 120px; min-width: 0; gap: 6px; }
+.lobby .rr-audio-mute { min-width: 0; padding: 0 10px; white-space: nowrap; }
+.lobby .rr-audio-vol { width: 100%; min-width: 40px; }
+/* end audio controls */

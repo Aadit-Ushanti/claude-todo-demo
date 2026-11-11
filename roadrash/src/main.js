@@ -7,13 +7,15 @@ import { NetworkManager } from './network/NetworkManager.js';
 import { WorldSync, decodeFlags } from './network/WorldSync.js';
 import { BroadcastSignaller } from './network/Signal.js';
 import { createRenderer } from './render/Renderer.js';
-import { maxCornerSpeed, leanScaleAt } from './physics/BikePhysics.js';
+import { maxCornerSpeed, leanScaleAt, DISPLAY_SPEED_SCALE, SPEED_SCALE } from './physics/BikePhysics.js';
 import { createInput } from './input/Input.js';
 import { createHud } from './ui/Hud.js';
 import { createLobby } from './ui/Lobby.js';
 import { computeGrid, AI_NAMES, joinOrder, assignBikes, normalizeBike, BIKE_INFO } from './game/Roster.js';
 import { DIFFICULTY, normalizeDifficulty } from './game/Difficulty.js';
 import { createChampionship, restoreChampionship } from './game/Championship.js';
+import { createAudio } from './audio/Audio.js';
+import { loadAudioPrefs } from './ui/audioControls.js';
 
 const { createRace, stepRace, setHumans, applyRemoteHit } = RaceMod;
 const SIM_DT = RaceMod.SIM_DT || 1 / 60;
@@ -35,6 +37,16 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore 
 const canvas = document.getElementById('game');
 const renderer = createRenderer(canvas);
 const input = createInput(canvas);
+const audio = createAudio();
+loadAudioPrefs(audio);
+// iOS / Chrome only allow audio after a user gesture: unlock on the first tap or key press (kept until it has taken effect)
+{
+  const unlock = () => { audio.unlock(); if (audio.debug().state === 'running') { window.removeEventListener('pointerup', unlock); window.removeEventListener('keydown', unlock); } };
+  window.addEventListener('pointerup', unlock);
+  window.addEventListener('keydown', unlock);
+  // UI click sounds for menu / pause buttons
+  document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.lobby button, .hud-modal button, #quality button')) audio.event('click'); }, true);
+}
 const nm = new NetworkManager({});
 const trackCache = new Map();
 const getTrack = (id) => { let t = trackCache.get(id); if (!t) { t = buildTrack(TRACKS[id]); trackCache.set(id, t); } return t; };
@@ -76,6 +88,7 @@ const hud = createHud(document.getElementById('hud'), {
   onAgain: () => again(),
   onNext: () => {},
   onContinue: () => continueFinal(),
+  audio,
 });
 input.onPause = () => togglePause();
 
@@ -97,6 +110,7 @@ function setPaused(p) {
   const okScreen = state.screen === 'race' ? !!race : state.screen === 'break';
   if (!okScreen || state.mode !== 'solo') return;
   state.paused = p;
+  if (p) audio.suspend(); else audio.resume();
   hud.showPause(p, state.screen !== 'break');
   last = null;
 }
@@ -251,6 +265,7 @@ function startRace(trackId, ros) {
     ws.onAuthorityChange(authorityChanged);
   }
   state.screen = 'race'; state.paused = false;
+  audio.resume(); audio.setTrack(def); cdBeep = 0;
   doneAt = -1; firstAt = -1; acc = 0; last = null; lastWeapon = null; resultsAt = -1; goShownAt = -1; latch.until = -1;
   prevL.init = false;
   hud.hideResults(); hud.showPause(false); hud.setVisible(true); hud.setPauseButton(state.mode === 'solo');
@@ -263,6 +278,7 @@ function startRace(trackId, ros) {
 }
 
 function endRace() {
+  audio.hush();
   if (ws) { try { ws.dispose(); } catch { /* ignore */ } ws = null; }
   race = null;
 }
@@ -280,6 +296,7 @@ function endMultiplayer(msg) {
 
 function toMenuScreen() {
   state.screen = 'menu'; state.paused = false; brk = null; renderedTrack = null;
+  audio.resume();
   hud.setVisible(false); hud.showPause(false); hud.hideResults();
   input.setTouchVisible(false);
   qbar.classList.add('on');
@@ -452,7 +469,7 @@ function showChampResults() {
 function enterBreak() {
   const c = session.champ;
   if (!c) return;
-  state.paused = false; hud.showPause(false);
+  state.paused = false; audio.resume(); hud.showPause(false);
   if (c.isOver) { enterFinal(); return; }
   state.screen = 'break';
   brk = { t: 0, stage: 0, isReady: false, startSent: false, ready: new Set(), nextTrack: null };
@@ -562,6 +579,7 @@ function netEvent(type, payload, from) {
 }
 
 lobby = createLobby(document.getElementById('lobby'), nm, {
+  audio,
   tracks: Object.fromEntries(Object.values(TRACKS).map((t) => [t.id, t.name])),
   roomOptions: params.get('signal') === 'broadcast' ? { signaller: () => new BroadcastSignaller(), stun: false } : {},
   onStart: (trackId, ros) => { if (ros.solo) prepareRoster(ros); startRace(ros.trackId || trackId, ros); },
@@ -660,13 +678,13 @@ function simStep() {
   if (ev.length) {
     for (let i = 0; i < ev.length; i++) {
       const e = ev[i];
-      if (e.type === 'hit') { if (ws) { ws.sendHit(race, e); hits.sent++; } logEv({ type: 'hit', from: e.from, to: e.to, id: e.id }); }
-      else if (e.type === 'crash') { logEv({ type: 'crash', slot: e.slot, cause: e.cause, t: race.t }); if (e.slot === mySlot) hud.toast('WIPEOUT!', 1800); }
+      if (e.type === 'hit') { if (e.from === mySlot) audio.event('hit', { weapon: r.swing.weapon || (race.riders[e.from] && race.riders[e.from].swing.weapon) }); if (ws) { ws.sendHit(race, e); hits.sent++; } logEv({ type: 'hit', from: e.from, to: e.to, id: e.id }); }
+      else if (e.type === 'crash') { logEv({ type: 'crash', slot: e.slot, cause: e.cause, t: race.t }); if (e.slot === mySlot) { hud.toast('WIPEOUT!', 1800); audio.event(e.cause === 'wall' ? 'wall' : 'crash'); if (e.cause === 'wall') audio.event('crash'); } else if (nearRider(e.slot, 35)) audio.event('bump'); }
       else if (e.type === 'remount') logEv({ type: 'remount', slot: e.slot, t: race.t });
-      else if (e.type === 'finish') { logEv({ type: 'finish', slot: e.slot, place: e.place, t: e.t }); if (e.slot === mySlot && resultsAt < 0) resultsAt = race.t + 2; }
-      else if (e.type === 'blow') { logEv({ type: 'blow', from: e.from, to: e.to, damage: e.damage }); if (e.from === mySlot) hud.toast('HIT!', 700); }
-      else if (e.type === 'go') { goShownAt = race.t; logEv({ type: 'go' }); }
-      else if (e.type === 'carhit') logEv({ type: 'carhit', slot: e.slot });
+      else if (e.type === 'finish') { logEv({ type: 'finish', slot: e.slot, place: e.place, t: e.t }); if (e.slot === mySlot) audio.event('finish', { place: e.place }); if (e.slot === mySlot && resultsAt < 0) resultsAt = race.t + 2; }
+      else if (e.type === 'blow') { logEv({ type: 'blow', from: e.from, to: e.to, damage: e.damage }); if (e.from === mySlot) { hud.toast('HIT!', 700); audio.event('hit', { weapon: race.riders[mySlot].swing.weapon }); } else if (e.to === mySlot) audio.event('hit', { taken: true, weapon: e.from >= 0 && race.riders[e.from] ? race.riders[e.from].swing.weapon : 'punch' }); }
+      else if (e.type === 'go') { goShownAt = race.t; audio.event('go'); logEv({ type: 'go' }); }
+      else if (e.type === 'carhit') { if (e.slot === mySlot) audio.event('carhit'); logEv({ type: 'carhit', slot: e.slot }); }
     }
     ev.length = 0;
   }
@@ -766,6 +784,54 @@ function renderFrame(dtReal, alpha) {
   renderer.render(prevL.init ? rb : me.bike, dtReal);
 }
 
+// ---------------------------------------------------------------- audio
+const audState = { paused: false, type: 'street', speed: 0, topSpeed: 50, throttle: 0, brake: 0, drifting: false, slip: 0, airborne: false, crashed: false, grip: 1, nearby: [], nearbyCount: 0 };
+for (let i = 0; i < 32; i++) audState.nearby.push({ id: 0, rx: 0, rz: 0, speed: 0, topSpeed: 50, closing: 0, type: 'street' });
+let cdBeep = 0;
+function nearRider(slot, m) {
+  const o = race && race.riders[slot], me = race && race.riders[mySlot];
+  if (!o || !me) return false;
+  return Math.hypot(o.bike.pos.x - me.bike.pos.x, o.bike.pos.z - me.bike.pos.z) < m;
+}
+function addNear(id, px, pz, vx, vz, speed, topSpeed, type, me, cy, sy, n) {
+  const dx = px - me.pos.x, dz = pz - me.pos.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist > 100 || n >= 32) return n;
+  const e = audState.nearby[n];
+  e.id = id; e.rx = dx * cy - dz * sy; e.rz = -dx * sy - dz * cy;
+  e.speed = speed; e.topSpeed = topSpeed; e.type = type;
+  e.closing = dist > 0.01 ? -(((vx - me.vel.x) * dx + (vz - me.vel.z) * dz) / dist) : 0;
+  return n + 1;
+}
+/** Feed the audio engine once per rendered frame: the local bike, the nearest riders / cars, countdown beeps. */
+function audioFrame(dt) {
+  const riders = race.riders, me = riders[mySlot].bike;
+  const cd = race.phase === 'countdown' || race.phase === 'grid' ? Math.max(1, Math.ceil(COUNTDOWN - race.t)) : 0;
+  if (cd > 0 && cd !== cdBeep) { cdBeep = cd; audio.event('beep'); } else if (cd === 0) cdBeep = 0;
+  const a = audState;
+  a.paused = state.paused;
+  a.type = me.spec.id; a.speed = Math.abs(me.speed) / SPEED_SCALE; a.topSpeed = me.spec.topSpeed / SPEED_SCALE; /* sound follows the displayed speed, not the lowered real one */
+  a.throttle = me.throttle; a.brake = me.brake; a.drifting = me.drifting; a.slip = me.slip;
+  a.airborne = me.airborne; a.crashed = me.crashed;
+  a.grip = race.track.gripAt(me.pos.x, me.pos.z);
+  const cy = Math.cos(me.yaw), sy = Math.sin(me.yaw);
+  let n = 0;
+  for (let i = 0; i < riders.length; i++) {
+    if (i === mySlot) continue;
+    const b = riders[i].bike;
+    if (b.crashed) continue;
+    n = addNear(i, b.pos.x, b.pos.z, b.vel.x, b.vel.z, Math.abs(b.speed) / SPEED_SCALE, b.spec.topSpeed / SPEED_SCALE, b.spec.id, me, cy, sy, n);
+  }
+  const cars = race.traffic;
+  for (let i = 0; i < cars.length; i++) {
+    const c = cars[i];
+    if (!c.active || c.hit) continue;
+    n = addNear(100 + c.id, c.pos.x, c.pos.z, c.vel.x, c.vel.z, c.speed, 0, 'car', me, cy, sy, n);
+  }
+  a.nearbyCount = n;
+  audio.update(dt, a);
+}
+
 const dotsOut = [];
 function updateHud() {
   const r = race.riders[mySlot], b = r.bike, tr = race.track;
@@ -789,7 +855,7 @@ function updateHud() {
   const sideTxt = input.read === undefined ? '' : 'auto-side';
   void sideTxt;
   hud.update({
-    speedKmh: Math.abs(b.speed) * 3.6 * 1.28, /* display scale: the real speeds were cut 22 % for handling; the readout keeps the old feel */ health: b.health / b.spec.health * 100, place: r.place, total: TOTAL,
+    speedKmh: Math.abs(b.speed) * 3.6 * DISPLAY_SPEED_SCALE / (b.boost > 0 ? b.boost : 1), /* display scale: real speeds are low for handling; the readout keeps the old numbers at the same share of top speed */ health: b.health / b.spec.health * 100, place: r.place, total: TOTAL,
     timeS: r.finished ? r.finishT : Math.max(0, raceT), count, hint, dots: dotsOut,
     riders: `${n} ${n === 1 ? 'rider' : 'riders'} + ${TOTAL - n} AI`,
     net: state.mode === 'solo' ? 'solo' : (nm.isAuthority ? 'host' : 'guest') + (race.authority === 'host' && !roster.solo ? ' (runs AI)' : ''),
@@ -820,6 +886,7 @@ function frame(now) {
       tickRace(now, dtReal);
       if (race && !NORENDER) { renderFrame(dtReal, acc / SIM_DT); updateHud(); }
       else if (race) updateHud();
+      if (race) audioFrame(dtReal);
     } else if (state.screen === 'break') {
       breakFrame(now, dtReal);
     }
@@ -836,6 +903,7 @@ function breakFrame(now, dtReal) {
 // hidden tab: pause solo; keep multiplayer ticking at a low rate without rendering
 let bgTimer = 0;
 document.addEventListener('visibilitychange', () => {
+  if (document.hidden) audio.suspend(); else if (!state.paused) audio.resume();
   if (document.hidden) {
     if (state.mode === 'solo' && race && state.screen === 'race' && !hud.resultsOpen) setPaused(true);
     if (!bgTimer && !(E2E && NORENDER)) {
@@ -886,7 +954,7 @@ window.__game = {
   get me() { return mySlot; },
   get ws() { return ws; },
   get hits() { return hits; },
-  renderer, nm, hud, input, state, log,
+  renderer, nm, hud, input, state, log, audio,
   get lobby() { return lobby; },
   startSolo(trackId, opts = {}) {
     if (opts.quality) setQuality(opts.quality);

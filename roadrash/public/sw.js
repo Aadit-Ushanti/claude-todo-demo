@@ -1,6 +1,6 @@
 // Bump VERSION whenever any shell file changes so clients pick up the new code.
 // The PRECACHE list is generated: node tests/e2e/gen-precache.mjs (an e2e test fails when it is stale or incomplete).
-const VERSION = 'v5-845ea4f9-c3';
+const VERSION = 'v5-e918c990-c4';
 const CACHE = `road-rash-${VERSION}`;
 
 // BEGIN PRECACHE
@@ -188,6 +188,8 @@ const PRECACHE = [
   '../assets/nature/scrub_atlas_512.webp',
   '../assets/nature/scrub_atlasn_1k.webp',
   '../src/ai/RivalAI.js',
+  '../src/audio/Audio.js',
+  '../src/audio/engineModel.js',
   '../src/game/Championship.js',
   '../src/game/Difficulty.js',
   '../src/game/Race.js',
@@ -228,6 +230,7 @@ const PRECACHE = [
   '../src/track/tracks.js',
   '../src/ui/Hud.js',
   '../src/ui/Lobby.js',
+  '../src/ui/audioControls.js',
   '../src/ui/hud.css',
   '../src/ui/lobby.css',
   './icons/icon-192.png',

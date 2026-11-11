@@ -16,14 +16,33 @@ const K_PITCH_GND = rate60(14 / 60);
 const K_PITCH_AIR = rate60(4 / 60);
 const K_YAWKICK = -60 * Math.log(1 - (1 / 60) / 0.5); // yaw kick decay (was 1 - dt / 0.5)
 const K_LATVEL = 60 * Math.log(1 + 3 / 60); // lateral kick decay (was / (1 + 3 dt))
-/** Airborne clearance (m) that makes a bike leave the ground at the 60 Hz step; it scales with dt^2 (a constant ground acceleration). */
-const AIR_CLEAR_60 = 0.03;
 /** Internal step (s) of the ground-following / take-off / landing logic; calls with a longer dt sub-step it. */
 const VERT_DT = 1 / 120;
 
 const G = 9.81;
+/**
+ * Real speeds are 30 % below the previous tuning (183.3 / 187.2 / 178.6 km/h became 128.3 / 131.0 / 125.0): the game is the same race at a
+ * lower real speed. Every speed in this model (bike tops, the knees of the lean ceiling, drift gates, wobble, crash thresholds, traffic, the
+ * AI) is the old number times SPEED_SCALE, so each behaviour happens at the same SHARE of top speed. Time-based things (lean rate and
+ * acceleration, the yaw and pitch followers, suspension, remount) are NOT scaled: the bikes react as quickly as before.
+ * Accelerations scale with the speed (so 0 to top takes as many seconds as before), lateral accelerations with its square (so a bend is
+ * taken at the same share of top speed with the same lean), see LATERAL_G.
+ */
+export const SPEED_SCALE = 0.7;
+/**
+ * The HUD reads real km/h times this: the old readout was real x 1.28 (at the old real speeds), so at the same share of top speed the new
+ * real speed shows the same number: 1.28 / SPEED_SCALE. Used by src/main.js for the speedKmh field of the HUD state.
+ */
+export const DISPLAY_SPEED_SCALE = 1.28 / SPEED_SCALE;
+const K = SPEED_SCALE;
+/** Acceleration (m/s^2) of a "1 g" longitudinal effect (slope, scrub, surface drag): scaled with the speed. */
+const G_LONG = G * K;
+/** The lateral acceleration scale (m/s^2 per unit of tan(lean)): g times SPEED_SCALE^2, so v^2 k = a_lat is met at SPEED_SCALE times the old speed. Exported for the AI and the tools. */
+export const LATERAL_G = G * K * K;
+/** Airborne clearance (m) that makes a bike leave the ground at the 60 Hz step; it scales with dt^2 (a constant ground acceleration) and with K^2: a crest launches at the same share of top speed as before. */
+const AIR_CLEAR_60 = 0.03 * K * K;
 const RHO_UNUSED = 0; // aero is folded into spec.drag (N per (m/s)^2)
-const V_MIN = 4; // minimum speed in the yaw = g tan(lean)/v formula
+const V_MIN = 4 * K; // minimum speed in the yaw = g tan(lean)/v formula
 const MAX_SLIP = 0.65;
 const SLIP_ON = 0.12;
 const SLIP_OFF = 0.05;
@@ -69,10 +88,13 @@ export function makeSpec(id, name, o) {
 }
 
 /**
- * Real top speeds are 22 % below the first tuning (235 / 240 / 229 km/h before): the corners were too sharp for the pace. The camera and the
- * velocity effects read speed / topSpeed, so the bikes still look as fast as before. Power is 0.72 of the old values: the launch (traction-limited,
- * 0-100 km/h as before) is unchanged, and the thrust at the new top speed stays under what the tyres can transmit (the sport would otherwise
- * be traction-limited short of its top speed).
+ * Real top speeds are 51 % below the first tuning (235 / 240 / 229 km/h): 22 % for the corners, then 30 % more (SPEED_SCALE) so the bikes can be
+ * controlled. The HUD shows real x DISPLAY_SPEED_SCALE (the old numbers at the same share of top speed), and the camera and the velocity effects
+ * read speed / topSpeed, so the bikes still look and read as fast as before. The literals below are the 22 %-cut tuning times SPEED_SCALE:
+ * top speed x K, power x K^2, rolling resistance, traction share and brakes x K (every force scales with the speed, so the speed curve over time is
+ * the old one scaled by K: 0 to top takes as many seconds as before, and a share of top speed is reached in the same time).
+ * (health / staggerMul / tempo of the three were re-balanced a little when the speeds were cut and the swing reach widened: the duels of
+ * tests/balance.test.js are decided by the health shares, so they are sensitive to tenths of a health point.)
  * Bike specifications: three trade-offs of equal overall strength (see tests/balance.test.js and tests/tools/balance-report.mjs).
  *  Sport   : highest top speed and the best high-speed lean authority; weakest launch, lightest (biggest kick when hit), least health and stagger resistance, quickest swing cycle.
  *  Street  : best acceleration, grip and lean rate, quickest direction changes; middling top speed; average toughness.
@@ -84,33 +106,35 @@ export function makeSpec(id, name, o) {
  */
 export const BIKE_SPECS = {
   street: makeSpec('street', 'Street', {
-    mass: 295, power: 59260, topKmh: 183.3, crr: 0.015, wheelbase: 1.45, brake: 9.5, grip: 1.25,
-    maxLean: 0.785, leanRate: 3.8, leanAccel: 36, tractionFrac: 0.5056065239551478,
+    mass: 295, power: 59260 * K * K, topKmh: 183.3 * K, crr: 0.015 * K, wheelbase: 1.45, brake: 9.5 * K, grip: 1.25,
+    maxLean: 0.785, leanRate: 3.8, leanAccel: 36, tractionFrac: 0.5056065239551478 * K,
     suspFreq: 2.2, suspDamp: 0.5, travel: 0.14,
-    hsLeanLoss: 0.31, health: 100, staggerMul: 1, knock: 1, tempo: 0.989, tag: 'ST',
+    hsLeanLoss: 0.31, health: 100.6, staggerMul: 1, knock: 1, tempo: 0.97, tag: 'ST',
   }),
   sport: makeSpec('sport', 'Sport', {
-    mass: 255.923, power: 72674, topKmh: 187.2, crr: 0.014, wheelbase: 1.4, brake: 10.5, grip: 1.22,
-    maxLean: 0.795, leanRate: 3.3, leanAccel: 28, tractionFrac: 0.5,
+    mass: 255.923, power: 72674 * K * K, topKmh: 187.2 * K, crr: 0.014 * K, wheelbase: 1.4, brake: 10.5 * K, grip: 1.22,
+    maxLean: 0.795, leanRate: 3.3, leanAccel: 28, tractionFrac: 0.5 * K,
     suspFreq: 2.6, suspDamp: 0.55, travel: 0.12,
-    hsLeanLoss: 0.305, health: 99.753, staggerMul: 1.276, knock: 1.149, tempo: 0.924, tag: 'SP',
+    hsLeanLoss: 0.305, health: 99.65, staggerMul: 1.276, knock: 1.149, tempo: 0.924, tag: 'SP',
   }),
   chopper: makeSpec('chopper', 'Cruiser', {
-    mass: 379.001, power: 71058, topKmh: 178.6, crr: 0.018, wheelbase: 1.95, brake: 9, grip: 1.15,
-    maxLean: 0.78, leanRate: 2.6, leanAccel: 22, tractionFrac: 0.5495723086468999,
+    mass: 379.001, power: 71058 * K * K, topKmh: 178.6 * K, crr: 0.018 * K, wheelbase: 1.95, brake: 9 * K, grip: 1.15,
+    maxLean: 0.78, leanRate: 2.6, leanAccel: 22, tractionFrac: 0.5495723086468999 * K,
     suspFreq: 1.7, suspDamp: 0.45, travel: 0.16,
-    hsLeanLoss: 0.3, health: 106.345, staggerMul: 0.802, knock: 1.081, tempo: 1.052, tag: 'CR',
+    hsLeanLoss: 0.3, health: 100.8, staggerMul: 0.875, knock: 1.081, tempo: 1.24, tag: 'CR',
   }),
 };
 
 /**
  * Melee weapons. reach: m from the shoulder; damage: base health; arc: half-angle (rad) of the
  * swing sector around the lateral axis; windup: s; impulse: base N*s; stagger: base seconds.
+ * reach / arc are the forgiving values a human's swing uses (reach +30 %, a wider sector so a rival half a bike length ahead or behind still counts);
+ * reach0 / arc0 are the old tighter ones, used by the AI riders (their attack rate and what they land are unchanged).
  */
 export const WEAPONS = {
-  punch: { reach: 0.85, damage: 5, arc: 0.9, windup: 0.12, impulse: 140, stagger: 0.35 },
-  baton: { reach: 1.5, damage: 9, arc: 1.2, windup: 0.25, impulse: 260, stagger: 0.6 },
-  chain: { reach: 2.0, damage: 13, arc: 1.4, windup: 0.4, impulse: 340, stagger: 0.9 },
+  punch: { reach: 1.1, reach0: 0.85, damage: 5, arc: 1.25, arc0: 0.9, windup: 0.12, impulse: 140, stagger: 0.35 },
+  baton: { reach: 1.95, reach0: 1.5, damage: 9, arc: 1.4, arc0: 1.2, windup: 0.25, impulse: 260, stagger: 0.6 },
+  chain: { reach: 2.6, reach0: 2.0, damage: 13, arc: 1.5, arc0: 1.4, windup: 0.4, impulse: 340, stagger: 0.9 },
 };
 
 /** Flat ground used when no track is supplied. */
@@ -168,34 +192,34 @@ export function standUpFactor(brk) { return 1 - STANDUP * smooth01(brk / 0.8); }
  * @param {object} spec a bike spec
  * @param {number} k curvature magnitude (1/m), > 0
  * @param {number} share fraction of the available lateral acceleration to use
- * @param {number} gripCap lateral acceleration the tyres give (m/s^2)
+ * @param {number} gripCap lateral acceleration the tyres give (m/s^2; use grip * LATERAL_G)
  * @returns {number} speed (m/s)
  */
 export function maxCornerSpeed(spec, k, share, gripCap) {
-  let lo = 3, hi = 80;
+  let lo = 3 * K, hi = 80 * K;
   for (let i = 0; i < 9; i++) {
     const v = 0.5 * (lo + hi);
-    if (v * v * k > share * Math.min(G * Math.tan(spec.maxLean * leanScaleAt(spec, v)), gripCap)) hi = v; else lo = v;
+    if (v * v * k > share * Math.min(LATERAL_G * Math.tan(spec.maxLean * leanScaleAt(spec, v)), gripCap)) hi = v; else lo = v;
   }
   return 0.5 * (lo + hi);
 }
 
 /** Speed (m/s) from which the lean ceiling starts to fall, and the speed where it has fallen all the way (see leanScaleAt). */
-const LEAN_FALL_V0 = 34;
-const LEAN_FALL_V1 = 54;
+const LEAN_FALL_V0 = 34 * K;
+const LEAN_FALL_V1 = 54 * K;
 /** hsLeanLoss is the share of lean authority a bike loses at very high speed; the ceiling falls this many times faster than the raw share. */
 const LEAN_FALL_GAIN = 2.1;
 
 /**
- * Share (0..1) of the bike's maxLean that full steer commands at speed v: it rises from 0 at a standstill to 1 by about 12 m/s (the bars do
- * the turning below that), and then falls with speed, by spec.hsLeanLoss * 2.1 of the way at 54 m/s (the new top speeds are 50-52 m/s), so that full steer at 200 km/h
+ * Share (0..1) of the bike's maxLean that full steer commands at speed v: it rises from 0 at a standstill to 1 by about 12 K m/s (the bars do
+ * the turning below that), and then falls with speed, by spec.hsLeanLoss * 2.1 of the way at 54 K m/s (the top speeds are 50-52 K m/s), so that full steer at 200 km/h
  * is a lane change and not a swerve. The AI, the balance tools and bikeStats use the same function.
  * @param {{hsLeanLoss:number}} spec a bike spec
  * @param {number} v speed (m/s)
  * @returns {number} 0..1
  */
 export function leanScaleAt(spec, v) {
-  return smooth01((v - 2) / 10) * (1 - Math.min(0.92, spec.hsLeanLoss * LEAN_FALL_GAIN) * smooth01((v - LEAN_FALL_V0) / (LEAN_FALL_V1 - LEAN_FALL_V0)));
+  return smooth01((v - 2 * K) / (10 * K)) * (1 - Math.min(0.92, spec.hsLeanLoss * LEAN_FALL_GAIN) * smooth01((v - LEAN_FALL_V0) / (LEAN_FALL_V1 - LEAN_FALL_V0)));
 }
 
 /**
@@ -237,21 +261,24 @@ export function stepBike(bike, input, dt, track) {
   let v = b.speed;
 
   // ---- longitudinal ----
+  // catch-up boost (Race.js sets bike.boost from the live place): thrust x boost and drag / boost^2, so both acceleration
+  // and top speed scale by about the same factor. 1 = no effect.
+  const bst = b.boost > 0 ? b.boost : 1;
   let a = 0;
   if (!air) {
-    if (thr > 0) a += thr * Math.min(s.power / Math.max(v, 3), s.tractionFrac * mu * m * G) / m;
-    a -= G * Math.sin(b.groundPitch); // slope
+    if (thr > 0) a += bst * thr * Math.min(s.power / Math.max(v, 3 * K), s.tractionFrac * mu * m * G) / m;
+    a -= G_LONG * Math.sin(b.groundPitch); // slope
   }
   const av = Math.abs(v);
-  a -= (s.drag * av * v + s.crr * m * G * clamp(v * 4, -1, 1) * (air ? 0 : 1)) / m;
+  a -= (s.drag / (bst * bst) * av * v + s.crr * m * G * clamp(v * 4 / K, -1, 1) * (air ? 0 : 1)) / m;
 
-  const brkUse = air ? 0 : brk * Math.min(s.brake, mu * G);
+  const brkUse = air ? 0 : brk * Math.min(s.brake, mu * G_LONG);
   let decel = brkUse;
-  if (b.crashed && !air) decel += 0.7 * mu * G;
-  decel += 0.6 * G * mu * Math.abs(Math.sin(b.slip)) * (air ? 0 : 1); // drift scrub
+  if (b.crashed && !air) decel += 0.7 * mu * G_LONG;
+  decel += 0.6 * G_LONG * mu * Math.abs(Math.sin(b.slip)) * (air ? 0 : 1); // drift scrub
   // off the tarmac (shoulder 0.1, off-road 0.3): the surface drags the bike down; it never feeds the slide
   const rough = air ? 0 : 1 - gripNow;
-  if (rough > 0 && v > 0) decel += rough * (0.9 + 0.3 * v);
+  if (rough > 0 && v > 0) decel += rough * (0.9 * K + 0.3 * v);
   let vNew = v + a * dt;
   if (v > 0) { vNew -= decel * dt; if (vNew < 0) vNew = 0; }
   else if (vNew < 0) vNew = 0;
@@ -264,8 +291,8 @@ export function stepBike(bike, input, dt, track) {
   // braking while leaned stands the bike up a little (the harder the brake, the more), so the line holds as the speed drops
   const standUp = standUpFactor(brk);
   // a rough surface unsettles the bars a little (deterministic: a function of where the bike is)
-  const jig = rough * 0.35 * Math.sin(0.9 * (b.pos.x + b.pos.z)) * Math.min(1, v / 10);
-  let target = st * s.maxLean * leanScale * standUp + wobble * 0.12 * Math.min(1, v / 10) + jig;
+  const jig = rough * 0.35 * Math.sin(0.9 * (b.pos.x + b.pos.z)) * Math.min(1, v / (10 * K));
+  let target = st * s.maxLean * leanScale * standUp + wobble * 0.12 * Math.min(1, v / (10 * K)) + jig;
   if (b.crashed) target = (b.lean >= 0 ? 1 : -1) * 1.45;
   target = clamp(target, -s.maxLean * (b.crashed ? 2 : 1), s.maxLean * (b.crashed ? 2 : 1));
   const wantRate = clamp((target - b.lean) * 8, -s.leanRate, s.leanRate);
@@ -282,13 +309,14 @@ export function stepBike(bike, input, dt, track) {
   // A slide has to be set up on purpose: a deep lean (> ~0.35 rad) AND a hard brake (> ~0.8) at speed. Merely asking for more than the tyres
   // give (overload) only starts a slow slide, and the first response to it is running wide (the yaw cap below), not a spin.
   // The load is measured against the tarmac grip: a low-grip surface limits the turn (cap) and drags (rough), it does not feed the slide.
-  const latD = G * Math.abs(Math.tan(b.lean));
-  const tot = Math.hypot(latD, brkUse) / (s.grip * G);
+  // (the lateral load and the tyre budget scale with K^2, the brake with K: the brake enters the combined load times K, the same load as before)
+  const latD = LATERAL_G * Math.abs(Math.tan(b.lean));
+  const tot = Math.hypot(latD, brkUse * K) / (s.grip * LATERAL_G);
   const over = Math.max(0, tot - 1.0);
   const hardB = smooth01((brk - 0.8) / 0.15);
   const leanF = smooth01((Math.abs(b.lean) - 0.35) / 0.12);
-  const spdF = smooth01((v - 8) / 12);
-  const drive = air ? 0 : hardB * leanF * spdF * 1.1 + over * 3 * smooth01((v - 3) / 6);
+  const spdF = smooth01((v - 8 * K) / (12 * K));
+  const drive = air ? 0 : hardB * leanF * spdF * 1.1 + over * 3 * smooth01((v - 3 * K) / (6 * K));
   const dirS = b.lean / (Math.abs(b.lean) + 0.05);
   let rec = 2;
   if (brk < 0.5) rec += 6; // let go of the brake: it straightens up quickly
@@ -299,14 +327,14 @@ export function stepBike(bike, input, dt, track) {
 
   // ---- yaw ----
   const vy = Math.max(v, V_MIN);
-  const cap = mu * G * 0.98 / vy; // what the tyres can turn: asking for more runs the bike wide
-  let yawL = G * Math.tan(b.lean) / vy;
+  const cap = mu * LATERAL_G * 0.98 / vy; // what the tyres can turn: asking for more runs the bike wide
+  let yawL = LATERAL_G * Math.tan(b.lean) / vy;
   yawL *= 1 + 0.9 * Math.abs(b.slip);
   yawL = clamp(yawL, -cap * (1 + 0.9 * Math.abs(b.slip)), cap * (1 + 0.9 * Math.abs(b.slip)));
-  const yawDrift = b.slip * 1.0 * smooth01((v - 3) / 7);
+  const yawDrift = b.slip * K * smooth01((v - 3 * K) / (7 * K));
   const delta = 0.5 * st;
   const yawBar = v * Math.tan(delta) / s.wheelbase;
-  const w = smooth01((v - 3) / 6);
+  const w = smooth01((v - 3 * K) / (6 * K));
   let cmd = w * yawL + (1 - w) * yawBar + yawDrift + b.yawKick;
   if (b.crashed) cmd = b.yawKick;
   if (air) cmd *= 0.3;
@@ -347,21 +375,21 @@ export function stepBike(bike, input, dt, track) {
     }
     wvF = (hF - b.hF) / dtv;
     wvR = (hR - b.hR) / dtv;
-    waF = clamp((wvF - b.wvF) / dtv, -60, 60);
-    waR = clamp((wvR - b.wvR) / dtv, -60, 60);
+    waF = clamp((wvF - b.wvF) / dtv / (K * K), -60, 60); // wheel accelerations scale with v^2: normalised, the suspension is excited as before
+    waR = clamp((wvR - b.wvR) / dtv / (K * K), -60, 60);
     b.hF = hF; b.hR = hR; b.wvF = wvF; b.wvR = wvR;
     b.groundPitch = Math.atan2(hF - hR, s.wheelbase);
 
     if (!b.airborne) {
       const yPrev = b.pos.y;
-      const yBall = yPrev + b.vel.y * dtv - 0.5 * G * dtv * dtv;
+      const yBall = yPrev + b.vel.y * dtv - 0.5 * LATERAL_G * dtv * dtv; // the take-off test with the K^2 gravity: see AIR_CLEAR_60
       const dtr = dtv * 60;
       if (yBall > gy + AIR_CLEAR_60 * dtr * dtr) {
         b.airborne = true;
         b.vel.y -= G * dtv;
         b.pos.y = yBall;
       } else {
-        const gv = clamp((gy - yPrev) / dtv, -40, 40);
+        const gv = clamp((gy - yPrev) / dtv, -40 * K, 40 * K);
         b.pos.y = gy;
         b.vel.y = gv;
       }
@@ -369,7 +397,7 @@ export function stepBike(bike, input, dt, track) {
       b.vel.y -= G * dtv;
       b.pos.y += b.vel.y * dtv;
       if (b.pos.y <= gy) {
-        const gv = clamp(0.5 * (wvF + wvR), -40, 40);
+        const gv = clamp(0.5 * (wvF + wvR), -40 * K, 40 * K);
         const l = Math.max(0, gv - b.vel.y);
         if (l > landed) landed = l;
         b.airborne = false;
@@ -382,7 +410,7 @@ export function stepBike(bike, input, dt, track) {
   // ---- suspension (base-excited spring-damper per wheel) ----
   const wn = Math.PI * 2 * s.suspFreq;
   const zeta = s.suspDamp;
-  const axn = clamp(b.accel / 9, -1, 1);
+  const axn = clamp(b.accel / (9 * K), -1, 1);
   const cTF = clamp(0.3 - 0.45 * axn, 0, 1);
   const cTR = clamp(0.3 + 0.35 * axn, 0, 1);
   const bump = b.airborne ? 0 : 1 / s.travel;
@@ -404,14 +432,37 @@ export function stepBike(bike, input, dt, track) {
 
   // ---- pitch ----
   let pT;
-  if (b.airborne) pT = Math.atan2(b.vel.y, Math.max(Math.abs(v), 1));
+  if (b.airborne) pT = Math.atan2(b.vel.y, Math.max(Math.abs(v), K));
   else pT = b.groundPitch - (b.suspF - b.suspR) * 0.15;
   b.pitch += (pT - b.pitch) * (1 - Math.exp(-(b.airborne ? K_PITCH_AIR : K_PITCH_GND) * dt));
 }
 
+/** Perceived-speed value (see perceivedSpeed) reached at 100 % of top speed, and the shape of the climb to it. */
+const FEEL_TOP = 1.15;
+const FEEL_POW = 3.7;
+/** Largest perceived speed the chase camera and the post effects use (a short boost of acceleration or a near pass can go above FEEL_TOP). */
+export const FEEL_MAX = 1.17;
+/** Upper limit of the camera shake amplitude (m): the shake grows with the perceived speed but never past this, so steering stays easy to judge. */
+export const SHAKE_CAP = 0.0725; // = 0.004 + 0.05 FEEL_MAX^2, what Renderer.js's own shake law gives at FEEL_MAX
+
 /**
- * Chase-camera parameters for a bike. FOV widens 60 -> 95 deg with speed (ease-out curve);
- * shake and lag grow with speed and during drift / stagger.
+ * The perceived speed (0..FEEL_TOP, a little above 1 for t > 1) the speed effects are driven by, from the share t = |speed| / topSpeed.
+ * The real speeds are low, so the effects (FOV, blur, speed lines, vignette, camera pull-back) are driven by the SHARE of top speed and rise
+ * early: about 1.06 at half of top speed (above about 0.9 the speed lines and the blur of the post pass begin to show), 1.15 at top speed.
+ * @param {number} t share of top speed, >= 0
+ * @returns {number}
+ */
+export function perceivedSpeed(t) {
+  if (t <= 0) return 0;
+  if (t >= 1) return FEEL_TOP + (t - 1) * 0.6;
+  return FEEL_TOP * (1 - Math.pow(1 - t, FEEL_POW));
+}
+
+/**
+ * Chase-camera parameters for a bike. All of them are driven by the share of top speed through perceivedSpeed (so they read the same at any
+ * real top speed): FOV widens 58 -> about 100 deg (95 deg already at half of top speed), shake and lag grow with it (shake capped at SHAKE_CAP,
+ * and doubled at most by a drift or a stagger), the camera pulls back and lags. Renderer.js applies the same laws to the smoothed value of
+ * FxVelocity (which also carries the acceleration / near-pass boosts); this function is the unsmoothed version of them.
  * @param {object} bike BikeState
  * @param {{fov:number,shake:number,lag:number,dist:number,height:number}} [out] optional reuse target
  * @returns {{fov:number,shake:number,lag:number,dist:number,height:number}}
@@ -419,14 +470,14 @@ export function stepBike(bike, input, dt, track) {
 export function cameraParams(bike, out) {
   const o = out || { fov: 0, shake: 0, lag: 0, dist: 0, height: 0 };
   const t = clamp(Math.abs(bike.speed) / bike.spec.topSpeed, 0, 1);
-  const e = t * (2 - t);
+  const v = Math.min(perceivedSpeed(t), FEEL_MAX);
   const dr = bike.drifting ? 1 : 0;
   const sg = bike.stagger > 0 ? 1 : 0;
-  o.fov = 60 + 35 * e;
-  o.shake = (0.004 + 0.05 * t * t) * (1 + 0.8 * dr + 1.2 * sg);
-  o.lag = 0.08 + 0.16 * t + 0.08 * dr + 0.05 * sg;
-  o.dist = 4.2 + 1.6 * t + 0.4 * dr;
-  o.height = 1.8 + 0.3 * t;
+  o.fov = 58 + 37 * v;
+  o.shake = Math.min(0.004 + 0.05 * v * v, SHAKE_CAP) * (1 + 0.8 * dr + 1.2 * sg);
+  o.lag = 0.08 + 0.16 * Math.min(v, 1) + 0.08 * dr + 0.05 * sg;
+  o.dist = 4.2 + 1.6 * Math.min(v, 1.1) + 0.4 * dr;
+  o.height = 1.8 + 0.3 * Math.min(v, 1);
   return o;
 }
 
@@ -446,9 +497,10 @@ const RIDER_H1 = 1.8;
  * @param {object} victim BikeState
  * @param {string} weaponId key of WEAPONS
  * @param {number} side -1 swing right, +1 swing left
+ * @param {boolean} [forgiving=true] false: the old reach and arc (reach0 / arc0), as the AI riders judge a swing
  * @returns {null|{damage:number,impulse:{x:number,y:number,z:number},stagger:number,relSpeed:number,point:{x:number,y:number,z:number}}}
  */
-export function meleeHit(attacker, victim, weaponId, side) {
+export function meleeHit(attacker, victim, weaponId, side, forgiving = true) {
   const w = WEAPONS[weaponId];
   if (!w || attacker.crashed || victim.crashed) return null;
   side = side < 0 ? -1 : 1;
@@ -466,7 +518,8 @@ export function meleeHit(attacker, victim, weaponId, side) {
   const vy = victim.yaw, vc = Math.cos(vy);
   const vlx = -vc, vlz = Math.sin(vy);
   const vsl = Math.sin(victim.lean), vcl = Math.cos(victim.lean);
-  const cosArc = Math.cos(w.arc);
+  const cosArc = Math.cos(forgiving ? w.arc : w.arc0);
+  const reach = forgiving ? w.reach : w.reach0;
   let best = Infinity, bpx = 0, bpy = 0, bpz = 0;
   const N = 6;
   for (let i = 0; i <= N; i++) {
@@ -476,7 +529,7 @@ export function meleeHit(attacker, victim, weaponId, side) {
     const pz = victim.pos.z + vlz * vsl * h;
     const ex = px - _sh.x, ey = py - _sh.y, ez = pz - _sh.z;
     const d3 = Math.sqrt(ex * ex + ey * ey + ez * ez) - RIDER_RADIUS;
-    if (d3 > w.reach) continue;
+    if (d3 > reach) continue;
     const dh = Math.sqrt(ex * ex + ez * ez);
     const along = ex * dx + ez * dz;
     if (along <= 0) continue; // wrong side
@@ -495,15 +548,15 @@ export function meleeHit(attacker, victim, weaponId, side) {
   const passing = Math.abs(rvx * afx + rvz * afz);
   const relSpeed = Math.sqrt(closing * closing + passing * passing);
 
-  const dmg = w.damage * (1 + Math.min(relSpeed / 12, 5));
-  const J = w.impulse * (1 + Math.min(relSpeed / 10, 4));
+  const dmg = w.damage * (1 + Math.min(relSpeed / (12 * K), 5)); // relative speeds are judged as a share of the old (1 / K) speeds
+  const J = w.impulse * (1 + Math.min(relSpeed / (10 * K), 4));
   let ix = dx * 0.85 + nx * 0.15, iz = dz * 0.85 + nz * 0.15;
   const il = Math.sqrt(ix * ix + iz * iz) || 1;
   ix = ix / il * J; iz = iz / il * J;
   return {
     damage: dmg,
     impulse: { x: ix, y: 0.1 * J, z: iz },
-    stagger: w.stagger * (1 + Math.min(relSpeed / 20, 1.5)),
+    stagger: w.stagger * (1 + Math.min(relSpeed / (20 * K), 1.5)),
     relSpeed,
     point: { x: bpx, y: bpy, z: bpz },
   };
@@ -532,17 +585,19 @@ export function applyHit(victim, hit) {
   v.health = Math.max(0, v.health - hit.damage);
   v.stagger = Math.max(v.stagger, hit.stagger * v.spec.staggerMul);
   const c = Math.cos(v.yaw), s = Math.sin(v.yaw);
-  const dvL = (hit.impulse.x * -c + hit.impulse.z * s) / m; // along left
-  const dvF = (hit.impulse.x * -s + hit.impulse.z * -c) / m; // along forward
+  const rL = (hit.impulse.x * -c + hit.impulse.z * s) / m; // along left (m/s of the impulse before the speed scale)
+  const rF = (hit.impulse.x * -s + hit.impulse.z * -c) / m; // along forward
+  // the sideways shove (latVel, yaw kick, lean kick) is geometric (metres of the same road, quick lean): not scaled; the forward speed change is the same share of the (lower) speeds
+  const dvL = rL, dvF = rF * K;
   v.latVel += dvL;
   v.speed = Math.max(0, v.speed + dvF);
   v.yawKick += -dvL * 0.5;
-  v.leanRate += dvL * 1.5;
-  const kick = Math.hypot(dvL, dvF);
+  v.leanRate += rL * 1.5;
+  const kick = Math.hypot(rL, rF); // judged in the old units against the old threshold
   const leanFrac = Math.min(1, Math.abs(v.lean) / v.spec.maxLean);
   const speedFrac = Math.min(1, Math.abs(v.speed) / v.spec.topSpeed);
   // pushing against the lean direction is stabilising, with it is destabilising
-  const against = dvL * v.lean < 0 ? 0.15 : -0.15;
+  const against = rL * v.lean < 0 ? 0.15 : -0.15;
   const threshold = 4.5 * v.spec.knock * (1 - 0.55 * leanFrac + against * leanFrac) / (1 + 0.6 * speedFrac);
   if (v.health <= 0 || kick > threshold) v.crashed = true;
 }
@@ -554,11 +609,12 @@ export function applyHit(victim, hit) {
 /** Longitudinal acceleration (m/s^2) at speed v, full throttle, flat ground, the same formula as stepBike. */
 function accelAt(s, v) {
   const m = s.mass;
-  return (Math.min(s.power / Math.max(v, 3), s.tractionFrac * s.grip * m * G) - s.drag * v * v - s.crr * m * G) / m;
+  return (Math.min(s.power / Math.max(v, 3 * K), s.tractionFrac * s.grip * m * G) - s.drag * v * v - s.crr * m * G) / m;
 }
 
 /**
- * The real numbers behind a spec: top speed (nominal asymptote), 0-100 and 0-200 km/h times (s, Infinity when out of reach in 90 s; z200 is the time to 150 km/h, kept under its old name),
+ * The real numbers behind a spec: top speed (nominal asymptote), the times (s, Infinity when out of reach in 90 s) to what used to be 100 km/h (z100) and 150 km/h (z200),
+ * i.e. 100 K and 150 K real km/h (the same shares of top speed, so the same seconds as before),
  * braking distance from 100 km/h (m), steady cornering speed on a 60 m radius (km/h, lean- or grip-limited), and the rest of the stats.
  * @param {object} spec a BIKE_SPECS entry
  * @returns {{topKmh:number, z100:number, z200:number, brake100:number, corner60:number, maxLeanDeg:number, leanRate:number, mass:number, health:number, staggerResist:number, knock:number, tempo:number}}
@@ -568,14 +624,14 @@ export function bikeStats(spec) {
   let v = 0, t = 0, z100 = Infinity, z200 = Infinity; // z200: the time to 150 km/h now (the bikes no longer reach 200)
   while (t < 90 && z200 === Infinity) {
     v += accelAt(spec, v) * dt; t += dt;
-    if (z100 === Infinity && v >= 100 / 3.6) z100 = t;
-    if (v >= 150 / 3.6) z200 = t;
+    if (z100 === Infinity && v >= 100 * K / 3.6) z100 = t;
+    if (v >= 150 * K / 3.6) z200 = t;
   }
-  v = 100 / 3.6;
+  v = 100 * K / 3.6;
   let d = 0;
-  const aB = Math.min(spec.brake, spec.grip * G);
+  const aB = Math.min(spec.brake, spec.grip * G_LONG);
   while (v > 0.01) { const a = aB + (spec.drag * v * v + spec.crr * spec.mass * G) / spec.mass; d += v * dt; v -= a * dt; }
-  const vc = maxCornerSpeed(spec, 1 / 60, 1, spec.grip * G * 0.98);
+  const vc = maxCornerSpeed(spec, 1 / 60, 1, spec.grip * LATERAL_G * 0.98);
   return {
     topKmh: spec.topKmh, z100, z200, brake100: d, corner60: vc * 3.6, maxLeanDeg: spec.maxLean * 180 / Math.PI, leanRate: spec.leanRate,
     mass: spec.mass, health: spec.health, staggerResist: 1 / spec.staggerMul, knock: spec.knock, tempo: spec.tempo,
@@ -586,9 +642,9 @@ const n01 = (x, lo, hi) => clamp((x - lo) / (hi - lo), 0, 1);
 
 /**
  * The stat card of a spec: four 0-10 scores derived from bikeStats (one decimal).
- *  Speed      top speed, 155..195 km/h.
+ *  Speed      top speed, 155..195 K km/h (K = SPEED_SCALE: the same scores as at the old real speeds).
  *  Accel      0-100 km/h (3.5..7 s) and 0-150 km/h (z200 field; 7..14 s), half each.
- *  Handling   lean rate (1.5..4.2 rad/s), steady cornering speed on a 60 m radius (82..92 km/h) and lean acceleration, i.e. how quickly it
+ *  Handling   lean rate (1.5..4.2 rad/s), steady cornering speed on a 60 m radius (82..92 K km/h) and lean acceleration, i.e. how quickly it
  *             changes direction (14..38 rad/s^2): 40 / 30 / 30 %.
  *  Toughness  health x knock-off resistance / stagger (0.7..1.7) and mass (220..400 kg), half each.
  * @param {object} spec a BIKE_SPECS entry
@@ -600,9 +656,9 @@ export function statCard(spec) {
   const a100 = 1 - n01(st.z100, 3.5, 7), a200 = 1 - n01(st.z200 === Infinity ? 99 : st.z200, 7, 14);
   const idx = (st.health / 100) * st.knock * st.staggerResist;
   return {
-    speed: r1(10 * n01(st.topKmh, 155, 195)),
+    speed: r1(10 * n01(st.topKmh, 155 * K, 195 * K)),
     accel: r1(10 * (0.5 * a100 + 0.5 * a200)),
-    handling: r1(10 * (0.4 * n01(st.leanRate, 1.5, 4.2) + 0.3 * n01(st.corner60, 82, 92) + 0.3 * n01(spec.leanAccel, 14, 38))),
+    handling: r1(10 * (0.4 * n01(st.leanRate, 1.5, 4.2) + 0.3 * n01(st.corner60, 82 * K, 92 * K) + 0.3 * n01(spec.leanAccel, 14, 38))),
     toughness: r1(10 * (0.5 * n01(idx, 0.7, 1.7) + 0.5 * n01(st.mass, 220, 400))),
   };
 }

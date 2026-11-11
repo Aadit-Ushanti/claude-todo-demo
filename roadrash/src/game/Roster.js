@@ -3,6 +3,7 @@
 // second guest = 13, and so on downwards; AI fill the remaining slots.
 // Grid position (where a bike lines up on the start grid, 0 = pole) is a separate thing from the slot: see computeGrid.
 import { difficultyParams } from './Difficulty.js';
+import { SPEED_SCALE } from '../physics/BikePhysics.js';
 
 /** Total bikes on the road: humans plus AI rivals always add up to this. */
 export const GRID_SIZE = 15;
@@ -129,8 +130,8 @@ export function assignBikes(opts = {}) {
 
 const WEAPON_IDS = ['punch', 'baton', 'chain'];
 
-/** Scale on the rivals' straight-line pace (m/s). 1: unchanged by the 22 % cut of the bikes' top speeds (they ride at most 95 % of their top speed, and the corners hold the field back most of the lap); a slower field would sit behind the 60-90 km/h traffic and pass it too slowly. */
-const CRUISE_SCALE = 1;
+/** Scale on the rivals' straight-line pace (m/s): SPEED_SCALE, like the bikes' top speeds and the traffic (they ride at most 95 % of their top speed, so a rival holds the same share of its top speed as before and passes the traffic at the same relative speed). */
+const CRUISE_SCALE = SPEED_SCALE;
 
 /**
  * A rival's personality: deterministic from the slot only.

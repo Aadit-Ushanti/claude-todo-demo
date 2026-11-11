@@ -1,5 +1,9 @@
 // "Faked" velocity for visual effects: a perceived speed 0..1+ that drives FOV, shake, lag, blur, speed lines,
 // chromatic fringe, wheel blur and road streaking, instead of the raw physics speed.
+// The real speeds are low (SPEED_SCALE), so the value is driven by the SHARE of top speed through perceivedSpeed (BikePhysics): it is already
+// about 1.06 at half of top speed (the post pass starts its blur and speed lines at about 0.9) and 1.15 at top speed. Accelerations are judged in the
+// old units (divided by SPEED_SCALE), so a launch still gives the same boost.
+import { SPEED_SCALE, FEEL_MAX, perceivedSpeed } from '../physics/BikePhysics.js';
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 /**
@@ -8,7 +12,7 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
  * @returns {{update:(bike:object, dtReal:number, hints?:{nearPass?:number, airborne?:boolean, crashed?:boolean})=>number, value:number, reset:()=>void, setScale:(s:number)=>void, smoothSpeed:(prev:number, target:number, dt:number)=>number}}
  */
 export function createFxVelocity(opts = {}) {
-  const attack = opts.attack ?? 0.15, release = opts.release ?? 0.6, max = opts.max ?? 1.3;
+  const attack = opts.attack ?? 0.15, release = opts.release ?? 0.6, max = opts.max ?? FEEL_MAX;
   let scale = opts.scale ?? 1;
   let smooth = 0, prevSpeed = 0, accel = 0, crashEase = 1, boost = 0, init = false;
   const api = {
@@ -21,10 +25,10 @@ export function createFxVelocity(opts = {}) {
       if (!init) { prevSpeed = speed; smooth = clamp(Math.abs(speed) / top, 0, 1.2); init = true; }
       const raw = clamp(Math.abs(speed) / top, 0, 1.2);
       // forward acceleration, low-passed (a collision spike is rejected by the clamp)
-      const a = clamp((speed - prevSpeed) / dt, -30, 30);
+      const a = clamp((speed - prevSpeed) / dt, -30 * SPEED_SCALE, 30 * SPEED_SCALE);
       prevSpeed = speed;
       accel += (a - accel) * (1 - Math.exp(-dt / 0.25));
-      const accBoost = clamp((accel - 3) / 12, 0, 1) * 0.12;
+      const accBoost = clamp((accel / SPEED_SCALE - 3) / 12, 0, 1) * 0.12;
       const h = hints || null;
       const near = h && h.nearPass ? clamp(h.nearPass, 0, 1) * 0.16 : 0;
       const air = h && h.airborne ? 0.08 : 0;
@@ -34,9 +38,8 @@ export function createFxVelocity(opts = {}) {
       // crashed: ease the effects down; recover quickly after remount
       const ce = h && h.crashed ? 0.25 : 1;
       crashEase += (ce - crashEase) * (1 - Math.exp(-dt / (ce < crashEase ? 0.4 : 0.8)));
-      // exaggerating curve: 0.65 -> ~0.88, 1 -> 1, keeps growing above
-      const t = smooth;
-      const f = t <= 1 ? 1 - (1 - t) * (1 - t) : 1 + (t - 1) * 1.2;
+      // exaggerating curve (perceivedSpeed): 0.5 -> ~1.06, 1 -> 1.15, keeps growing a little above
+      const f = perceivedSpeed(smooth);
       api.value = clamp(f * crashEase, 0, max) * scale;
       return api.value;
     },

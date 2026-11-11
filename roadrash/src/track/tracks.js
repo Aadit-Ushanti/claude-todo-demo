@@ -78,8 +78,8 @@ const sierra = course({
   gradeAt: (s, rng) => 0.045 + 0.04 * Math.sin(s / 520) + (rng() - 0.5) * 0.03,
   next(c) {
     const t = c.rng();
-    if (t < 0.18) c.arc(c.R(70, 110), c.R(110, 190));       // tighter mountain bend
-    else if (t < 0.85) c.arc(c.R(120, 320), c.R(150, 340)); // sweeper
+    if (t < 0.18) c.arc(c.R(170, 260), c.R(110, 190));      // tighter mountain bend (was R 70-110)
+    else if (t < 0.85) c.arc(c.R(320, 700), c.R(150, 340)); // sweeper (was R 120-320)
     else c.straight(c.R(60, 160));
     if (c.rng() < 0.35) c.straight(c.R(30, 90));
   },
@@ -93,7 +93,7 @@ const coast = course({
   target: 6000, limit: 1.0, alt: 0.88, bankK: 4, bankMax: 0.045,
   gradeAt: (s) => 0.022 * Math.sin(s / 150 + 0.7) + 0.008 * Math.sin(s / 61),
   next(c) {
-    c.arc(c.R(150, 400), c.R(120, 280));
+    c.arc(c.R(300, 720), c.R(120, 280)); // was R 150-400
     if (c.rng() < 0.3) c.straight(c.R(40, 120));
   },
 });
@@ -106,7 +106,7 @@ const redwood = course({
   target: 4600, limit: 1.3, alt: 0.9, bankK: 6, bankMax: 0.07,
   gradeAt: (s, rng) => 0.03 * Math.sin(s / 80 + 1.1) + (rng() - 0.5) * 0.015,
   next(c) {
-    c.arc(c.R(56, 105), c.R(40, 115)); // was R(28, 85): the tightest bends could not be taken above ~45 km/h
+    c.arc(c.R(170, 320), c.R(40, 115)); // was R 56-105 (and R 28-85 before that): gentle bends, so riders can ride alongside and fight (still the twistiest course)
     if (c.rng() < 0.4) c.straight(c.R(14, 50));
   },
 });
@@ -144,7 +144,7 @@ const valley = course({
   target: 5200, limit: 1.1, alt: 0.8, bankK: 4, bankMax: 0.05,
   gradeAt: (s, rng) => 0.045 * Math.sin(s / 70) + (rng() - 0.5) * 0.012,
   next(c) {
-    c.arc(c.R(110, 330), c.R(110, 240));
+    c.arc(c.R(260, 620), c.R(110, 240)); // was R 110-330
     if (c.rng() < 0.4) c.straight(c.R(40, 110));
   },
 });

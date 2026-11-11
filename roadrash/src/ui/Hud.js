@@ -1,10 +1,11 @@
 import { BIKE_INFO } from '../game/Roster.js';
+import { createAudioControls } from './audioControls.js';
 
 /**
  * Race HUD: speed, place, timer, health, weapon chips, progress bar with rider dots, hints, countdown, toasts,
  * pause and results overlays. update() writes to the DOM only when a value changed.
  * @param {HTMLElement} root
- * @param {{onResume?:()=>void, onMenu?:()=>void, onAgain?:()=>void, onPause?:()=>void, onNext?:()=>void, onContinue?:()=>void}} [handlers]
+ * @param {{onResume?:()=>void, onMenu?:()=>void, onAgain?:()=>void, onPause?:()=>void, onNext?:()=>void, onContinue?:()=>void, audio?:object}} [handlers]
  * @returns {object} HUD controller
  */
 export function createHud(root, handlers = {}) {
@@ -38,7 +39,8 @@ export function createHud(root, handlers = {}) {
       <div class="hud-card"><h2>Paused</h2>
         <button class="primary" data-act="resume">Resume</button>
         <button data-act="again">Restart race</button>
-        <button data-act="menu">Quit to menu</button></div>
+        <button data-act="menu">Quit to menu</button>
+        <div data-k="audioslot"></div></div>
     </div>
     <div class="hud-modal" data-k="results" hidden>
       <div class="hud-card hud-results" data-k="resultscard"><h2 data-k="resulttitle">Results</h2>
@@ -63,6 +65,7 @@ export function createHud(root, handlers = {}) {
 
   const el = {};
   root.querySelectorAll('[data-k]').forEach((n) => { el[n.dataset.k] = n; });
+  if (handlers.audio) el.audioslot.appendChild(createAudioControls(root.ownerDocument || document, handlers.audio));
   const race = root.querySelector('.hud-race');
   const dotEls = Array.from(root.querySelectorAll('.hud-dot'));
   const chips = {};

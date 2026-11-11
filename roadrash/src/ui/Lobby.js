@@ -10,6 +10,7 @@ import { RoomSession, normalizeRoomCode } from '../network/Mesh.js';
 import { DIFFICULTIES, DIFFICULTY, DEFAULT_DIFFICULTY, normalizeDifficulty } from '../game/Difficulty.js';
 import { BIKE_TYPES, BIKE_INFO, DEFAULT_BIKE, normalizeBike } from '../game/Roster.js';
 import { BIKE_SPECS, statCard } from '../physics/BikePhysics.js';
+import { createAudioControls } from './audioControls.js';
 
 const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
@@ -281,6 +282,7 @@ export function createLobby(root, nm, opts = {}) {
     row.appendChild(solo);
     row.appendChild(btn('Host Game', '', () => go('host')));
     row.appendChild(btn('Join Game', '', () => go('join')));
+    if (opts.audio) row.appendChild(createAudioControls(doc, opts.audio)); // compact: shares the button row
     card.appendChild(row);
     card.appendChild(status);
   }

@@ -11,7 +11,7 @@
 //                                     also gets rider.hitFx = {t, side, weapon, strength}, a visual-only predicted stagger)
 //   {type:'blow', from, to, damage}   a swing that landed on a rider simulated here (already applied)
 //   {type:'carhit', id, slot}         a rider hit a traffic car
-import { DT, createBike, stepBike, meleeHit, applyHit, contactShare, swingCooldown, WEAPONS } from '../physics/BikePhysics.js';
+import { DT, createBike, stepBike, meleeHit, applyHit, contactShare, swingCooldown, WEAPONS, SPEED_SCALE } from '../physics/BikePhysics.js';
 import { crashSeverity, createDestruction, spawnRagdoll, spawnDebris, stepDestruction } from '../physics/DestructionSystem.js';
 import { createTraffic, stepTraffic } from './Traffic.js';
 import { createBrain, rivalInput } from '../ai/RivalAI.js';
@@ -34,6 +34,7 @@ const GHOST_T = 1.5;
 const PLACE_EPS = 0.02; // metres: riders closer than this keep their order (the grid order at the start, stable side by side)
 const FINISH_GRACE_T = 20;
 const CAR_MASS = 1300;
+const K = SPEED_SCALE; // every speed threshold below is the old number times K: a crash needs the same share of top speed as before
 const MAX_EVENTS = 512;
 
 function mulberry32(a) {
@@ -84,7 +85,7 @@ export function createRace(opts) {
   const race = {
     track, seed, difficulty: normalizeDifficulty(opts.difficulty), t: 0, tick: 0, phase: 'grid', countdown: COUNTDOWN, goT: COUNTDOWN,
     authority: opts.authority === 'guest' ? 'guest' : 'host',
-    rng: mulberry32(seed ^ 0x5eed), humanSpec: opts.humanSpec || 'street',
+    rng: mulberry32(seed ^ 0x5eed), humanSpec: opts.humanSpec || 'street', catchUp: opts.catchUp !== false,
     riders: [], traffic: createTraffic(track, seed),
     destruction: createDestruction({ maxDebris: 96, maxRagdolls: 12, seed: seed ^ 0xd35 }),
     events: [], appliedHits: new Set(), _appliedRing: [], localSlots: (opts.localSlots || [0]).slice(), humanSlots: [], leaderS: NaN,
@@ -193,7 +194,7 @@ function crashRider(race, r, cause) {
   if (r.finished && !r.remote) { b.crashed = false; return; } // past the line: no more crashes, just shoves
   b.crashed = true; r.wasCrashed = true; r.crashT = 0; r.wrecks++;
   const sp = Math.abs(b.speed);
-  const e = Math.max(1500, 0.5 * b.spec.mass * sp * sp * 0.3, r.lastEnergy);
+  const e = Math.max(1500, 0.5 * b.spec.mass * (sp / K) * (sp / K) * 0.3, r.lastEnergy); // debris energy in the old units (sp / K): the same wreck as before
   spawnRagdoll(race.destruction, b, r.lastImpulse);
   _dir.x = b.vel.x + r.lastImpulse.x / b.spec.mass; _dir.y = 0.2; _dir.z = b.vel.z + r.lastImpulse.z / b.spec.mass;
   spawnDebris(race.destruction, b, _dir, e);
@@ -206,13 +207,22 @@ function crashRider(race, r, cause) {
 
 function resolveSwing(race, r) {
   const sw = r.swing;
+  // a human's swing is forgiving: the wider reach and arc of meleeHit, and if nobody is in reach on the chosen side the other side is tried
+  // (auto-side). The AI riders judge by the old geometry on the chosen side only.
+  const human = r.kind !== 'ai';
+  if (swingAt(race, r, sw.side, human)) return;
+  if (human) swingAt(race, r, -sw.side, true);
+}
+
+function swingAt(race, r, side, forgiving) {
+  const sw = r.swing;
   const att = r.bike;
   for (let i = 0; i < race.riders.length; i++) {
     const v = race.riders[i];
     if (v === r || v.bike.crashed) continue;
     const dx = v.bike.pos.x - att.pos.x, dz = v.bike.pos.z - att.pos.z;
     if (dx * dx + dz * dz > 25) continue;
-    const h = meleeHit(att, v.bike, sw.weapon, sw.side);
+    const h = meleeHit(att, v.bike, sw.weapon, side, forgiving);
     if (!h) continue;
     if (r.kind === 'ai' && v.kind === 'ai') { // rivals pull their punches against each other so the field does not wreck itself
       h.damage *= 0.5; h.stagger *= 0.5; h.impulse.x *= 0.35; h.impulse.y *= 0.35; h.impulse.z *= 0.35;
@@ -230,8 +240,9 @@ function resolveSwing(race, r) {
       v.lastEnergy = 2500 + h.damage * 100;
       pushEvent(race, { type: 'blow', from: r.slot, to: v.slot, damage: h.damage });
     }
-    return;
+    return true;
   }
+  return false;
 }
 
 function stepSwing(race, r, dt) {
@@ -280,18 +291,18 @@ function bikeContacts(race, a, b, dt) {
   // closing speed along the normal (n points toward A)
   const rvx = A.vel.x - B.vel.x, rvz = A.vel.z - B.vel.z;
   const closing = -(rvx * nx + rvz * nz);
-  if (closing <= 0.3) return;
+  if (closing <= 0.3 * K) return;
   _n.x = nx; _n.y = 0; _n.z = nz;
-  const sevA = crashSeverity(A, B, _n);
+  const sevA = crashSeverity(A, B, _n, K);
   if (side) {
     // sideswipe: shove apart sideways
-    const k = Math.min(1.5, closing * 0.4);
+    const k = Math.min(1.5, closing * 0.4 / K); // the sideways shove is geometric: the same for the same share of top speed
     // the lighter bike takes the bigger shove (contactShare), and a bike's stagger resistance applies to the wobble too
     if (aLoc) { A.latVel += k * (nx * lx + nz * lz) * 0.5 * contactShare(A.spec.mass, B.spec.mass); A.stagger = Math.max(A.stagger, 0.1 * A.spec.staggerMul); }
     if (bLoc) { const bl = Math.cos(B.yaw), bs = Math.sin(B.yaw); B.latVel -= k * (nx * -bl + nz * bs) * 0.5 * contactShare(B.spec.mass, A.spec.mass); B.stagger = Math.max(B.stagger, 0.1 * B.spec.staggerMul); }
   }
   const tx = -sy, tz = -cy;
-  if (sevA.outcome === 'crash' && closing > 5) {
+  if (sevA.outcome === 'crash' && closing > 5 * K) {
     // the faster rider along the contact normal crashes; both if very violent
     const aSpeedN = A.vel.x * -nx + A.vel.z * -nz, bSpeedN = B.vel.x * nx + B.vel.z * nz;
     const hitter = aSpeedN > bSpeedN ? a : b;
@@ -301,9 +312,9 @@ function bikeContacts(race, a, b, dt) {
       hitter.lastEnergy = sevA.energy;
       crashRider(race, hitter, 'bike');
     }
-    if (!other.remote && closing > 9 && other.ghost <= 0) { other.bike.stagger = Math.max(other.bike.stagger, 0.6); }
-    if (!other.remote && other.bike.speed < hitter.bike.speed + closing) other.bike.speed += Math.min(closing * 0.3, 3);
-  } else if (sevA.outcome !== 'none' || closing > 2) {
+    if (!other.remote && closing > 9 * K && other.ghost <= 0) { other.bike.stagger = Math.max(other.bike.stagger, 0.6); }
+    if (!other.remote && other.bike.speed < hitter.bike.speed + closing) other.bike.speed += Math.min(closing * 0.3, 3 * K);
+  } else if (sevA.outcome !== 'none' || closing > 2 * K) {
     const slow = a.bike.speed < b.bike.speed ? a : b; // rear-end: the faster one loses speed, the slower one gains
     const fast = slow === a ? b : a;
     if (!fast.remote) { fast.bike.speed = Math.max(0, fast.bike.speed - closing * 0.4); fast.bike.stagger = Math.max(fast.bike.stagger, 0.25); }
@@ -329,10 +340,10 @@ function carContacts(race, r, c) {
   _cnx = nx; _cnz = nz;
   const rvx = b.vel.x - c.vel.x, rvz = b.vel.z - c.vel.z;
   const closing = -(rvx * nx + rvz * nz);
-  if (closing <= 0.2) return;
+  if (closing <= 0.2 * K) return;
   _n.x = nx; _n.y = 0; _n.z = nz;
   _carLike.vel.x = c.vel.x; _carLike.vel.z = c.vel.z;
-  const sev = crashSeverity(b, _carLike, _n);
+  const sev = crashSeverity(b, _carLike, _n, K);
   const oncoming = c.dir < 0 && !c.hit;
   if (!c.hit) {
     c.hit = true; c.hv = true;
@@ -368,8 +379,8 @@ function carContacts(race, r, c) {
 const WALL_OFFSET = 6.5; // wall centre line beyond the paved edge + shoulder (its inner face is 0.1 m nearer: where the old clamp sat)
 const WALL_HALF = 0.1; // 0.2 m thick
 const WALL_CRASH_ANGLE = 0.35; // rad (20 degrees): a wall impact shallower than this never crashes
-const WALL_CRASH_VN = 8; // m/s into the wall that a steep impact needs to crash
-const WALL_CRASH_VN_MAX = 20; // m/s into the wall that crashes at any angle
+const WALL_CRASH_VN = 8 * K; // m/s into the wall that a steep impact needs to crash
+const WALL_CRASH_VN_MAX = 20 * K; // m/s into the wall that crashes at any angle
 const BIKE_H = 0.525, BIKE_R = 0.375; // bike capsule for bike-vs-bike: reaches 0.9 m ahead/behind, 0.375 m aside (the 1.8 x 0.75 contact box pair)
 const CAR_H = 0.6, CAR_R = 0.4; // bike capsule for bike-vs-car: 1.0 m ahead/behind, 0.4 m aside (the inflated car box margins)
 const SKIN = 0.01;
@@ -437,7 +448,7 @@ function wallTouch(race, r, nx, nz, dt) {
   if (!(vo > 0)) return false;
   const sp = Math.sqrt(A.vel.x * A.vel.x + A.vel.z * A.vel.z) || 1;
   const ang = Math.asin(Math.min(1, vo / sp));
-  const sev = crashSeverity(A, null, _n);
+  const sev = crashSeverity(A, null, _n, K);
   const bad = sev.outcome === 'crash' && ((ang > WALL_CRASH_ANGLE && vo > WALL_CRASH_VN) || vo > WALL_CRASH_VN_MAX);
   A.latVel = 0;
   A.speed = Math.max(0, A.speed * (1 - 1.5 * dt) - 0.35 * vo); // the scrape: some speed goes in proportion to what it hit with
@@ -564,7 +575,7 @@ function edges(race, r, dt) {
   const ad = r.d < 0 ? -r.d : r.d;
   const edge = tr.halfWidth + tr.shoulder;
   if (ad <= edge) return;
-  if (!b.crashed && b.speed > 0) { b.speed -= (0.22 * b.speed + 0.2 * (ad - edge)) * dt; if (b.speed < 0) b.speed = 0; }
+  if (!b.crashed && b.speed > 0) { b.speed -= (0.22 * b.speed + 0.2 * K * (ad - edge)) * dt; if (b.speed < 0) b.speed = 0; }
   const wall = edge + 6;
   if (ad > wall) {
     const sg = r.d >= 0 ? 1 : -1;
@@ -582,6 +593,20 @@ function edges(race, r, dt) {
   }
 }
 
+/**
+ * Catch-up boost by live place (a factor on acceleration and top speed; the speedometer divides it out again).
+ * The leader is held back a little, places 2 to the middle of the field are untouched, and from the 9th of 15 down
+ * the boost grows with every place to +15 % for the last rider. Scales to smaller fields by share of the field.
+ */
+export const CATCH_UP = { leader: 0.96, from: 8 / 14, first: 1.05, last: 1.15 };
+export function catchUpBoost(place, total) {
+  if (!(place > 0) || !(total > 1)) return 1;
+  if (place === 1) return CATCH_UP.leader;
+  const f = (place - 1) / (total - 1);
+  if (f < CATCH_UP.from - 1e-9) return 1;
+  return CATCH_UP.first + (CATCH_UP.last - CATCH_UP.first) * (f - CATCH_UP.from) / (1 - CATCH_UP.from);
+}
+function clampC(x, a, b) { return x < a ? a : x > b ? b : x; }
 function updatePlaces(race) {
   const ord = race._order;
   // insertion sort: finished first by finish order, then by s descending
@@ -654,6 +679,12 @@ export function stepRace(race, dt, localInputs) {
     si.throttle = inp.throttle; si.brake = inp.brake; si.steer = inp.steer; si.attack = inp.attack; si.attackSide = inp.attackSide;
     track._hint = r.s; // per-rider hint for the shared Track scratch search
     r.sx = b.pos.x; r.sz = b.pos.z;
+    // catch-up boost for human riders, from the live place; eased so a place swap never jerks the bike
+    if (!r.brain && race.catchUp !== false) {
+      const want = racing ? catchUpBoost(r.place, riders.length) : 1;
+      const cur = b.boost > 0 ? b.boost : 1;
+      b.boost = cur + clampC(want - cur, -0.04 * dt, 0.04 * dt);
+    } else b.boost = 1;
     stepBike(b, si, dt, track);
     if (r.ghost > 0) r.ghost -= dt;
   }
@@ -717,7 +748,7 @@ export function stepRace(race, dt, localInputs) {
       if (r.crashT >= REMOUNT_T) remount(race, r);
     } else if (r.kind === 'ai' && !r.remote && racing && !r.finished) {
       // wedged in a pile-up for seconds: lift the rider out a few metres on
-      if (b.speed < 1 && r.s < track.finishS - 10) { r.stuckT += dt; if (r.stuckT > 5) { r.stuckT = 0; remount(race, r, 8); } } else r.stuckT = 0;
+      if (b.speed < K && r.s < track.finishS - 10) { r.stuckT += dt; if (r.stuckT > 5) { r.stuckT = 0; remount(race, r, 8); } } else r.stuckT = 0;
     }
   }
 
