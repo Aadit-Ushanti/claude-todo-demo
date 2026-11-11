@@ -280,7 +280,7 @@ export function createRenderer(canvas) {
 
   // ---- game particles: dust off the pavement, tyre smoke on drifts, sparks on a slide (also exposed as spawnFx) ----
   const fxInfo = { dust: new THREE.Color(0.55, 0.45, 0.32) }, _fp = new THREE.Vector3(), _fv = new THREE.Vector3();
-  let emitAcc = 0;
+  let emitAcc = 0, draft = 0;
   function spawnFx(type, pos, vel) { if (scenery) scenery.fx.spawn(type, pos, vel); }
   function emitFx(bike, dt, s) {
     if (!bike || !terrain) return;
@@ -324,12 +324,28 @@ export function createRenderer(canvas) {
       const p = r.root.position, d = Math.hypot(p.x - bike.pos.x, p.z - bike.pos.z);
       if (d > 0.8 && d < 6 && 1 - d / 6 > near) near = 1 - d / 6;
     }
+    // slipstream: riding close behind another bike, in its line (2.5-16 m ahead of us, within 1.3 m sideways)
+    {
+      let want = 0;
+      const sp0 = Math.abs(bike.speed || 0);
+      if (sp0 > 8 && !bike.crashed) {
+        const ffx = -Math.sin(bike.yaw), ffz = -Math.cos(bike.yaw);
+        for (let i = 0; i < riders.riders.length; i++) {
+          const r = riders.riders[i];
+          if (!r || !r.root.visible) continue;
+          const dx = r.root.position.x - bike.pos.x, dz = r.root.position.z - bike.pos.z;
+          const f = dx * ffx + dz * ffz, l = Math.abs(dx * -ffz + dz * ffx);
+          if (f > 2.5 && f < 16 && l < 1.3) { const w = (1 - l / 1.3) * (f < 6 ? 1 : 1 - (f - 6) / 10); if (w > want) want = w; }
+        }
+      }
+      draft += (want - draft) * (1 - Math.exp(-dt / (want > draft ? 0.35 : 0.6)));
+    }
     const v = fx.update(bike, dt, { nearPass: near, airborne: !!bike.airborne, crashed: !!bike.crashed });
     // every speed effect derives from the perceived speed v (not the raw physics speed)
     const vc = Math.min(v, 1.25), mul = (1 + 0.8 * (bike.drifting ? 1 : 0)) * (bike.stagger > 0 ? 2.2 : 1);
     // the view widens only a little and the camera stays close, so the bike and rider stay big on screen at every speed
     cp.fov = 56 + 10 * Math.min(vc, 1.25);
-    cp.shake = (0.004 + 0.06 * vc * vc) * mul;
+    cp.shake = (0.003 + 0.034 * vc * vc) * (1 + 0.6 * (bike.drifting ? 1 : 0)) * (bike.stagger > 0 ? 1.8 : 1);
     cp.lag = 0.08 + 0.16 * Math.min(vc, 1) + (bike.drifting ? 0.08 : 0);
     cp.dist = 4.2 - 0.25 * Math.min(vc, 1.1);
     const bx = bike.pos.x, by = bike.pos.y, bz = bike.pos.z;
@@ -349,7 +365,7 @@ export function createRenderer(canvas) {
     camPos.x += cfx * along * aA + (ex - cfx * along) * aL;
     camPos.z += cfz * along * aA + (ez - cfz * along) * aL;
     camPos.y += ey * aY;
-    const sh = cp.shake;
+    const sh = dt > 0 ? cp.shake : 0; // no shake on a frozen (paused) frame
     let cx = camPos.x + (Math.random() * 2 - 1) * sh, cy = camPos.y + (Math.random() * 2 - 1) * sh, cz = camPos.z + (Math.random() * 2 - 1) * sh;
     if (terrain) {
       const g = groundAt(cx, cz);
@@ -390,7 +406,8 @@ export function createRenderer(canvas) {
     shadows.flush(16 + traffic.activeCount);
 
     shared.uStreak.value = 0;   // the road no longer smears its grain; speed reads from fov, blur at the edges and lines near top speed
-    post.setSpeed(v, time, camera.aspect, quality, env.state.grade);
+    post.setSpeed(v, time, camera.aspect, quality, env.state.grade, draft);
+    post.overlay.visible = quality === 'medium' || (quality === 'low' && draft > 0.02); // low: the cheap overlay only while slipstreaming
     if (quality === 'high') post.renderHigh(scene, camera);
     else renderer.render(scene, camera);
   }
@@ -406,6 +423,8 @@ export function createRenderer(canvas) {
     getQuality: () => quality,
     /** Perceived (faked) speed driving the effects, 0..1+. */
     get fxValue() { return fx.value; },
+    /** 0..1: how deep the player is in another bike's slipstream (drives the streaks around the bike). */
+    get draft() { return draft; },
     fx,
     /** Visual terrain height at (x, z) (camera clamp, props). */
     groundAt,

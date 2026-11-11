@@ -28,7 +28,13 @@ const G = 9.81;
  * Accelerations scale with the speed (so 0 to top takes as many seconds as before), lateral accelerations with its square (so a bend is
  * taken at the same share of top speed with the same lean), see LATERAL_G.
  */
-export const SPEED_SCALE = 0.7;
+export const SPEED_SCALE = 0.6;
+/**
+ * The scale of the SIDEWAYS capability of the bikes: lateral acceleration (LATERAL_G = g * LATERAL_SCALE^2 per unit of tan(lean)), and with it
+ * lane-change quickness, bend speeds in m/s and the grip budget. It stays at the value the speeds had when SPEED_SCALE was 0.7, so lowering the
+ * real speeds (SPEED_SCALE 0.6) did not make the bikes any less agile: crossing the road takes as long as before at a lower speed.
+ */
+export const LATERAL_SCALE = 0.7;
 /**
  * The HUD reads real km/h times this: the old readout was real x 1.28 (at the old real speeds), so at the same share of top speed the new
  * real speed shows the same number: 1.28 / SPEED_SCALE. Used by src/main.js for the speedKmh field of the HUD state.
@@ -38,7 +44,9 @@ const K = SPEED_SCALE;
 /** Acceleration (m/s^2) of a "1 g" longitudinal effect (slope, scrub, surface drag): scaled with the speed. */
 const G_LONG = G * K;
 /** The lateral acceleration scale (m/s^2 per unit of tan(lean)): g times SPEED_SCALE^2, so v^2 k = a_lat is met at SPEED_SCALE times the old speed. Exported for the AI and the tools. */
-export const LATERAL_G = G * K * K;
+export const LATERAL_G = G * LATERAL_SCALE * LATERAL_SCALE;
+/** Vertical 'gravity' of the ballistic take-off test: scales with the speeds (K^2), so a crest launches at the same share of top speed. */
+const VERT_G = G * K * K;
 /** Airborne clearance (m) that makes a bike leave the ground at the 60 Hz step; it scales with dt^2 (a constant ground acceleration) and with K^2: a crest launches at the same share of top speed as before. */
 const AIR_CLEAR_60 = 0.03 * K * K;
 const RHO_UNUSED = 0; // aero is folded into spec.drag (N per (m/s)^2)
@@ -107,21 +115,21 @@ export function makeSpec(id, name, o) {
 export const BIKE_SPECS = {
   street: makeSpec('street', 'Street', {
     mass: 295, power: 59260 * K * K, topKmh: 183.3 * K, crr: 0.015 * K, wheelbase: 1.45, brake: 9.5 * K, grip: 1.25,
-    maxLean: 0.785, leanRate: 3.8, leanAccel: 36, tractionFrac: 0.5056065239551478 * K,
+    maxLean: 0.785, leanRate: 3.686, leanAccel: 36, tractionFrac: 0.5056065239551478 * K,
     suspFreq: 2.2, suspDamp: 0.5, travel: 0.14,
     hsLeanLoss: 0.31, health: 100.6, staggerMul: 1, knock: 1, tempo: 1.06, tag: 'ST',
   }),
   sport: makeSpec('sport', 'Sport', {
-    mass: 255.923, power: 72674 * K * K, topKmh: 187.2 * K, crr: 0.014 * K, wheelbase: 1.4, brake: 10.5 * K, grip: 1.22,
-    maxLean: 0.795, leanRate: 3.3, leanAccel: 28, tractionFrac: 0.5 * K,
+    mass: 255.923, power: 76300 * K * K, topKmh: 184.2 * K, crr: 0.014 * K, wheelbase: 1.4, brake: 10.5 * K, grip: 1.22,
+    maxLean: 0.795, leanRate: 3.3, leanAccel: 28, tractionFrac: 0.52 * K,
     suspFreq: 2.6, suspDamp: 0.55, travel: 0.12,
-    hsLeanLoss: 0.305, health: 99.65, staggerMul: 1.15, knock: 1.149, tempo: 0.924, tag: 'SP',
+    hsLeanLoss: 0.305, health: 99.65, staggerMul: 1.1385, knock: 1.149, tempo: 0.924, tag: 'SP',
   }),
   chopper: makeSpec('chopper', 'Cruiser', {
-    mass: 379.001, power: 71058 * K * K, topKmh: 178.6 * K, crr: 0.018 * K, wheelbase: 1.95, brake: 9 * K, grip: 1.15,
-    maxLean: 0.78, leanRate: 2.6, leanAccel: 22, tractionFrac: 0.5495723086468999 * K,
+    mass: 379.001, power: 71058 * K * K, topKmh: 182.8 * K, crr: 0.018 * K, wheelbase: 1.95, brake: 9 * K, grip: 1.15,
+    maxLean: 0.78, leanRate: 2.6, leanAccel: 22, tractionFrac: 0.5413 * K,
     suspFreq: 1.7, suspDamp: 0.45, travel: 0.16,
-    hsLeanLoss: 0.3, health: 100.8, staggerMul: 0.875, knock: 1.081, tempo: 1.2, tag: 'CR',
+    hsLeanLoss: 0.27, health: 100.8, staggerMul: 0.945, knock: 1.081, tempo: 1.128, tag: 'CR',
   }),
 };
 
@@ -172,6 +180,7 @@ export function createBike(specId, pos, yaw = 0) {
     latVel: 0, yawKick: 0, suspFv: 0, suspRv: 0, groundPitch: 0, accel: 0,
     wInit: false, hF: 0, hR: 0, wvF: 0, wvR: 0,
     attack: null, attackSide: 1,
+    boost: 1, draft: 0, // boost: Race.js's catch-up x slipstream factor on acceleration and top speed; draft: the slipstream share (0..1) it contains
   };
 }
 
@@ -196,13 +205,14 @@ export function standUpFactor(brk) { return 1 - STANDUP * smooth01(brk / 0.8); }
  * @param {number} k curvature magnitude (1/m), > 0
  * @param {number} share fraction of the available lateral acceleration to use
  * @param {number} gripCap lateral acceleration the tyres give (m/s^2; use grip * LATERAL_G)
+ * @param {number} [assist] the bike's road assist (see ROAD_ASSIST): an assisted bike keeps more of its steering at speed
  * @returns {number} speed (m/s)
  */
-export function maxCornerSpeed(spec, k, share, gripCap) {
+export function maxCornerSpeed(spec, k, share, gripCap, assist = 0) {
   let lo = 3 * K, hi = 80 * K;
   for (let i = 0; i < 9; i++) {
     const v = 0.5 * (lo + hi);
-    if (v * v * k > share * Math.min(LATERAL_G * Math.tan(spec.maxLean * leanScaleAt(spec, v)), gripCap)) hi = v; else lo = v;
+    if (v * v * k > share * Math.min(LATERAL_G * Math.tan(spec.maxLean * leanScaleAt(spec, v, assist)), gripCap)) hi = v; else lo = v;
   }
   return 0.5 * (lo + hi);
 }
@@ -323,9 +333,9 @@ export function stepBike(bike, input, dt, track) {
   // A slide has to be set up on purpose: a deep lean (> ~0.35 rad) AND a hard brake (> ~0.8) at speed. Merely asking for more than the tyres
   // give (overload) only starts a slow slide, and the first response to it is running wide (the yaw cap below), not a spin.
   // The load is measured against the tarmac grip: a low-grip surface limits the turn (cap) and drags (rough), it does not feed the slide.
-  // (the lateral load and the tyre budget scale with K^2, the brake with K: the brake enters the combined load times K, the same load as before)
+  // (the lateral load and the tyre budget scale with LATERAL_SCALE^2, the brake with K: the brake enters the combined load times LATERAL_SCALE^2 / K, the same load as before)
   const latD = LATERAL_G * Math.abs(Math.tan(b.lean));
-  const tot = Math.hypot(latD, brkUse * K) / (s.grip * LATERAL_G);
+  const tot = Math.hypot(latD, brkUse * (LATERAL_SCALE * LATERAL_SCALE / K)) / (s.grip * LATERAL_G);
   const over = Math.max(0, tot - 1.0);
   const hardB = smooth01((brk - 0.8) / 0.15);
   const leanF = smooth01((Math.abs(b.lean) - 0.35) / 0.12);
@@ -397,7 +407,7 @@ export function stepBike(bike, input, dt, track) {
 
     if (!b.airborne) {
       const yPrev = b.pos.y;
-      const yBall = yPrev + b.vel.y * dtv - 0.5 * LATERAL_G * dtv * dtv; // the take-off test with the K^2 gravity: see AIR_CLEAR_60
+      const yBall = yPrev + b.vel.y * dtv - 0.5 * VERT_G * dtv * dtv; // the take-off test with the K^2 gravity: see AIR_CLEAR_60
       const dtr = dtv * 60;
       if (yBall > gy + AIR_CLEAR_60 * dtr * dtr) {
         b.airborne = true;
@@ -686,7 +696,7 @@ const n01 = (x, lo, hi) => clamp((x - lo) / (hi - lo), 0, 1);
  * The stat card of a spec: four 0-10 scores derived from bikeStats (one decimal).
  *  Speed      top speed, 155..195 K km/h (K = SPEED_SCALE: the same scores as at the old real speeds).
  *  Accel      0-100 km/h (3.5..7 s) and 0-150 km/h (z200 field; 7..14 s), half each.
- *  Handling   lean rate (1.5..4.2 rad/s), steady cornering speed on a 60 m radius (82..92 K km/h) and lean acceleration, i.e. how quickly it
+ *  Handling   lean rate (1.5..4.2 rad/s), steady cornering speed on a 60 m radius (82..92 LATERAL_SCALE km/h: the cornering is the sideways capability, not the speed scale) and lean acceleration, i.e. how quickly it
  *             changes direction (14..38 rad/s^2): 40 / 30 / 30 %.
  *  Toughness  health x knock-off resistance / stagger (0.7..1.7) and mass (220..400 kg), half each.
  * @param {object} spec a BIKE_SPECS entry
@@ -700,7 +710,7 @@ export function statCard(spec) {
   return {
     speed: r1(10 * n01(st.topKmh, 155 * K, 195 * K)),
     accel: r1(10 * (0.5 * a100 + 0.5 * a200)),
-    handling: r1(10 * (0.4 * n01(st.leanRate, 1.5, 4.2) + 0.3 * n01(st.corner60, 82 * K, 92 * K) + 0.3 * n01(spec.leanAccel, 14, 38))),
+    handling: r1(10 * (0.4 * n01(st.leanRate, 1.5, 4.2) + 0.3 * n01(st.corner60, 82 * LATERAL_SCALE, 92 * LATERAL_SCALE) + 0.3 * n01(spec.leanAccel, 14, 38))),
     toughness: r1(10 * (0.5 * n01(idx, 0.7, 1.7) + 0.5 * n01(st.mass, 220, 400))),
   };
 }

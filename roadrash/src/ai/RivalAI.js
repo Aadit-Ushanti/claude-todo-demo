@@ -37,37 +37,67 @@ export function createBrain(slot, seed = 0, difficulty = 'medium') {
   const r = mulberry32((seed | 0) * 7727 + slot * 131 + 17);
   const mr = mulberry32((seed | 0) * 6971 + slot * 313 + 91);
   const weaponAI = personality(slot, 'medium').weapon; // AI-vs-AI scraps do not depend on the level (only swings at humans do)
-  p.cruise *= diff.pace; p.cornerG *= diff.corner; p.brakeG *= diff.brake; p.wobble *= diff.wobble;
+  const share = diff.pace + diff.paceSpread * (2 * p.pace01 - 1); // the rival's own pace: a share of ITS bike's top speed (same for every type), narrow spread per level so the field bunches
+  p.cruise = Infinity; // an absolute cap in m/s (tests and tools may set one); the pace itself is share * top speed (see paceOf)
+  p.cornerG *= diff.corner; p.brakeG *= diff.brake; p.wobble *= diff.wobble;
   return {
-    ...p, weaponAI, id: slot, rand: r, diff, level, mrand: mr,
+    ...p, share, weaponAI, id: slot, rand: r, diff, level, mrand: mr,
     mT: diff.mistakeEvery > 0 ? diff.mistakeEvery * (0.4 + 0.8 * mr()) : 1e9, mLeft: 0, mKind: 0,
     wobPhase: r() * 6.28, tgtD: p.laneD, side: 1, attackT: 1 + 2 * r(), commitT: 0, stuckT: 0, done: false,
     vErr: 0, cap: 0, matchT: 0, farT: 9,
+    hp: -1, waitT: 0, rollT: 0, retalT: 0, openT: 0, openTake: false, chaseT: 0, backing: false, tracked: null, trackSwung: false,
+    st: { pass: 0, contest: 0, punch: 0, kick: 0, wheel: 0, wheelHazard: 0, block: 0, backOut: 0, holdFire: 0 }, // counters of the moves chosen (reports)
   };
 }
 
 
+/**
+ * The speed (m/s) a rival aims for on a clear straight: its pace share of its own bike's top speed, times the catch-up boost the bike has now,
+ * and never above an absolute cap `brain.cruise` when one is set.
+ * @param {object} brain from createBrain
+ * @param {{topSpeed:number}} spec the rival's bike spec
+ * @param {number} [boost] the bike's catch-up boost (1 = none)
+ * @returns {number} m/s
+ */
+export function paceOf(brain, spec, boost = 1) {
+  const b = boost > 1 ? boost : 1;
+  return Math.min(brain.cruise, brain.share * spec.topSpeed * b);
+}
+
 // module scratch (single threaded, reused every call)
-let _v = 0, _d = 0, _s = 0, _pref = 0, _brain = null, _ctx = null, _aBf = 5 * K;
+let _v = 0, _d = 0, _s = 0, _pref = 0, _brain = null, _ctx = null, _aBf = 5 * K, _relax = 0;
 const MAXT = 40;
 const PACK_RANGE = 50; // m: a human closer than this (along the road) is matched in speed
 const MATCH_T = 20; // s of speed matching per encounter
 const T_GAP = new Float64Array(MAXT), T_DS = new Float64Array(MAXT), T_OD = new Float64Array(MAXT), T_VO = new Float64Array(MAXT);
-const T_CLR = new Float64Array(MAXT), T_HALF = new Float64Array(MAXT), T_PULL = new Float64Array(MAXT);
+const T_CLR = new Float64Array(MAXT), T_HALF = new Float64Array(MAXT), T_PULL = new Float64Array(MAXT), T_BIKE = new Uint8Array(MAXT);
 let _nT = 0;
 
-/** Is the oncoming lane free for a pass that starts now? */
-function laneClear(gap, closing, olen) {
+const LANE_D = -0.3; // lateral offsets right of this are the oncoming lane (the strip between a car and the centre line is not)
+const PASS_ACC = 3; // m/s^2 a rider may count on while pulling past (it is nearly always more)
+
+/**
+ * Is the oncoming lane free for a pass? The pass needs the rider to gain `gap + olen + margin` metres on the slower vehicle: at the closing speed
+ * it has now, or, when it is following (closing ~ 0), at the speed it can build up from there. No oncoming car may reach the stretch of road
+ * the rider will use before the pass is over (plus the level's safety margin); the cars' own speeds are used, so a slow, far car does not block.
+ * @param {number} gap free distance to the vehicle ahead (m)
+ * @param {number} closing speed difference to it (m/s, may be <= 0)
+ * @param {number} olen its length (m)
+ * @param {boolean} out true if the rider is already out in the oncoming lane (no swing-out time to add)
+ */
+function laneClear(gap, closing, olen, out) {
   const cars = _ctx.cars;
   if (!cars) return true;
-  const g = Math.min(gap, 14 + closing * 1.0);
-  const tn = clamp((g + olen + 14) / Math.max(3 * K, closing), 1.2, 8); // the pass takes longer when the field is slower relative to the traffic (was capped at 4 s)
-  const W = Math.min(400, ((_v + 22 * K) * tn + 25) * _brain.diff.clearK);
+  const need = (gap > 0 ? gap : 0) + olen + 9;
+  const c0 = closing > 0 ? closing : 0;
+  const T = ((-c0 + Math.sqrt(c0 * c0 + 2 * PASS_ACC * need)) / PASS_ACC * 1.3 + (out ? 0.3 : 1.0)) * _brain.diff.clearK; // (x 1.3 + 0.3 s: the real pass is slower than the ideal one: the throttle is held while swinging out, the car may be a van)
+  const safe = _brain.diff.clearM;
   for (let i = 0; i < cars.length; i++) {
     const c = cars[i];
     if (!c.active || c.vs >= 0 || c.hit) continue;
     const dc = c.s - _s;
-    if (dc > -14 && dc < W) return false;
+    if (dc < -14) continue;
+    if (dc - (_v + 0.5 * PASS_ACC * T - c.vs) * T < safe) return false;
   }
   return true;
 }
@@ -80,12 +110,12 @@ function followCap(vo, gap, margin, half) {
 }
 
 /** Record a possible obstacle (bike or car) for this tick. */
-function consider(ds, od, vo, clr, half) {
+function consider(ds, od, vo, clr, half, bike) {
   const closing = _v - vo;
   const gap = ds - half - 1.0;
   if (ds < 0) {
     const alongside = ds > -2.2;
-    const passing = closing > 2 * K && ds > -(7 + half) && _brain.commitT > 0 && Math.abs(od - _d) < clr + 0.6;
+    const passing = closing > 2 * K && ds > -(_brain.commitT > 0 ? 7 + half : half + 3.5) && Math.abs(od - _d) < clr + 0.6; // (still beside it, or its front within a few metres of our rear wheel: do not swing back in yet)
     if (!alongside && !passing) return;
   } else {
     let thr = 14 + (closing > 0 ? closing * 2.5 + closing * closing / (2 * _aBf) : 0);
@@ -95,8 +125,8 @@ function consider(ds, od, vo, clr, half) {
   }
   if (_nT >= MAXT) return;
   const i = _nT++;
-  T_GAP[i] = ds < 0 ? 0 : gap; T_DS[i] = ds; T_OD[i] = od; T_VO[i] = vo; T_CLR[i] = clr; T_HALF[i] = half;
-  T_PULL[i] = ds < 0 ? 1e9 : (16 + Math.max(0, closing) * 1.2) * _brain.diff.pullK;
+  T_GAP[i] = ds < 0 ? 0 : gap; T_DS[i] = ds; T_OD[i] = od; T_VO[i] = vo; T_CLR[i] = clr - _relax; T_HALF[i] = half; T_BIKE[i] = bike ? 1 : 0;
+  T_PULL[i] = ds < 0 ? 1e9 : (26 + Math.max(0, closing) * 1.2) * _brain.diff.pullK; // (a rider that is following closes slowly: the swing-out must start before the follow gap, 30 m, is reached, or it never starts)
 }
 
 /**
@@ -124,6 +154,9 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
   brain.commitT -= dt;
   const minD = -(hw - 0.9), maxD = hw - 0.9;
   const diff = brain.diff;
+  const A = bike.assist > 0 ? bike.assist : 0; // the road assist this bike has (the same one the humans have): the road turns the bike for the rider
+  const bst = bike.boost > 1 ? bike.boost : 1;
+  const launch = (ctx.raceT || 0) < 6; // the grid launch: the bikes ahead are on their way too, they steer us round but never hold the throttle back (a touch is a shove)
   _pref = brain.laneD + brain.wobble * Math.sin((ctx.raceT || 0) * 0.35 + brain.wobPhase);
   // mistakes (easy): now and then brake too early for a moment, or run wide to the right-hand edge
   let mistakeBrake = false;
@@ -132,25 +165,43 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
     if (brain.mT <= 0) { brain.mKind = brain.mrand() < 0.5 ? 0 : 1; brain.mLeft = 1 + 1.2 * brain.mrand(); brain.mT = diff.mistakeEvery * (0.6 + 0.8 * brain.mrand()); }
     if (brain.mLeft > 0) { brain.mLeft -= dt; if (brain.mKind === 0) mistakeBrake = true; else _pref = -(hw - 1.1); }
   }
-  // defending (medium a little, hard a lot): a rider right behind us that is human, in our line: move to block it (never into the oncoming lane)
-  if (diff.defend > 0 && !brain.done) {
-    for (let i = 0; i < others.length; i++) {
-      const o = others[i];
-      if (o.kind !== 'human' || o.bike.crashed) continue;
-      const ds = o.s - s;
-      if (ds < -3 && ds > -26 && Math.abs(o.d - d) < 3.2) { _pref += (clamp(o.d, minD, -0.7) - _pref) * diff.defend; break; }
-    }
+  // who contests our position: the rider ahead in our line that we are not faster than by much (foe), a rider coming up behind in our line (chaser)
+  let foe = null, foeSc = 1e9, chaser = null, chaseSc = 1e9;
+  const fast = (ob) => ob.speed > v - 1.5;
+  for (let i = 0; i < others.length; i++) {
+    const o = others[i], ob = o.bike;
+    if (ob === bike || ob.crashed || o.finished) continue;
+    const ds = o.s - s;
+    if (ds > 30 || ds < -30) continue;
+    const lat = o.d - d, al = lat < 0 ? -lat : lat;
+    if (al > 2.8) continue;
+    if (ds > -1.2) { const sc = (ds < 1.2 ? -4 : ds) + 3 * al; if (sc < foeSc) { foeSc = sc; foe = o; } }
+    if (ds < -1.2 && ds > -26 && al < 3.2 && fast(ob)) { const sc = -ds + 3 * al; if (sc < chaseSc) { chaseSc = sc; chaser = o; } }
   }
+  // defending: a rider coming up behind in our line is blocked, once we have reacted (never into the oncoming lane); the level scales how much
+  if (chaser && diff.defend > 0 && !brain.done) {
+    brain.chaseT += dt;
+    if (brain.chaseT >= diff.react) { _pref += (clamp(chaser.d, minD, -0.7) - _pref) * diff.defend; if (brain.chaseT - dt < diff.react) brain.st.block++; }
+  } else brain.chaseT = 0;
+  // an episode of approaching a rider and passing it (clean: no blow thrown meanwhile; contested: there was a fight)
+  if (brain.tracked) {
+    let tr = null;
+    for (let i = 0; i < others.length; i++) if (others[i].bike === brain.tracked) { tr = others[i]; break; }
+    if (!tr || tr.bike.crashed || tr.s - s > 40) brain.tracked = null;
+    else if (tr.s - s < -2) { brain.st[brain.trackSwung ? 'contest' : 'pass']++; brain.tracked = null; }
+  } else if (foe && foe.s - s > 1.5 && foe.s - s < 14 && !foe.bike.crashed) { brain.tracked = foe.bike; brain.trackSwung = false; }
   _pref = clamp(_pref, minD, Math.min(maxD, -0.45));
 
   // ---------- obstacles: bikes and cars around us ----------
   _nT = 0;
+  // patience: held up behind something for a few seconds, a rider takes a tighter gap past it (up to 0.2 m less side clearance): a whole pack can otherwise sit behind one car for ever
+  _relax = 0.2 * clamp((brain.waitT - 3) / 5, 0, 1);
   for (let i = 0; i < others.length; i++) {
     const o = others[i], ob = o.bike;
     if (ob === bike) continue;
     const ds = o.s - s;
     if (ds < -9 || ds > 480) continue;
-    consider(ds, o.d, ob.speed, 1.25, 1.0);
+    consider(ds, o.d, ob.speed, 1.25, 1.0, true);
   }
   const cars = ctx.cars;
   if (cars) {
@@ -159,7 +210,7 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
       if (!c.active) continue;
       const ds = c.s - s;
       if (ds < -14 || ds > 480) continue;
-      consider(ds, c.d, c.vs, c.wid * 0.5 + 0.9, c.len * 0.5);
+      consider(ds, c.d, c.vs, (c.hit ? Math.max(c.len, c.wid) : c.wid) * 0.5 + 0.9, c.len * 0.5); // (a wreck tumbles: its clearance is its length)
     }
   }
   let tgt = _pref, cap = Infinity;
@@ -168,50 +219,74 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
     let nearest = 0;
     for (let i = 1; i < _nT; i++) if (T_GAP[i] < T_GAP[nearest] && T_DS[i] > 0) nearest = i;
     if (T_DS[nearest] <= 0) nearest = -1;
+    // an oncoming car about to meet us in the lane we are in (or about to enter): get back to the right and brake to merge behind whatever is there
+    let threat = false;
+    for (let i = 0; i < _nT; i++) {
+      if (T_VO[i] >= 0 || T_DS[i] <= 0) continue;
+      const ttc = T_GAP[i] / (v - T_VO[i] + 1e-3);
+      if (ttc < 3.2 && ((T_OD[i] - d) < 0 ? d - T_OD[i] : T_OD[i] - d) < T_CLR[i] + 0.6) { threat = true; break; }
+    }
     let laneOk = true, emergency = false;
     if (nearest >= 0) {
       const cl = v - T_VO[nearest];
       emergency = T_GAP[nearest] < Math.max(0, cl) * 1.15 + 6;
-      laneOk = brain.commitT > 0 || emergency || laneClear(T_GAP[nearest], cl, T_HALF[nearest] * 2);
+      laneOk = emergency || brain.commitT > 0 || laneClear(T_GAP[nearest], cl, T_HALF[nearest] * 2, d > LANE_D);
     }
+    // abort the pass (drop in behind) only while still behind what we are passing; level with it or past it, the way on is forward
+    if (threat && (nearest < 0 || T_GAP[nearest] > 3)) laneOk = false;
     let best = NaN, bestCost = 1e18, freeFar = false;
     for (let c = minD; c <= maxD + 1e-6; c += 0.35) {
       let near = false, far = false;
       for (let i = 0; i < _nT; i++) {
         const dd = T_OD[i] - c;
-        if ((dd < 0 ? -dd : dd) < T_CLR[i]) { far = true; if (T_GAP[i] <= T_PULL[i]) near = true; }
+        if ((dd < 0 ? -dd : dd) < T_CLR[i] + (c <= LANE_D && T_BIKE[i] === 0 ? 0.25 : 0)) { far = true; if (T_GAP[i] <= T_PULL[i] * (brain.commitT > 0 ? 2 : 1)) near = true; /* once out, stay out: no flicker back into the blocked line */ }
       }
-      const lane = c > -0.6;
+      const lane = c > LANE_D;
+      if (c > 0.7) continue; // (the middle strip only: the oncoming cars drive at 2.5 m, further left is their line)
       if (!far && (!lane || laneOk)) freeFar = true;
       if (near) continue;
       if (lane && !laneOk) continue;
       const cost = (c - _pref) * (c - _pref) + 0.12 * (c - brain.tgtD) * (c - brain.tgtD) + (lane ? 0.8 * brain.diff.laneCost : 0);
       if (cost < bestCost) { bestCost = cost; best = c; }
     }
+    if (best !== best) {
+      // nothing is free: take the line that overlaps what is around us the least (a car counts triple, an oncoming one five times, a bike once), close to where we are: never cut back across what we are passing
+      let bp = 1e18;
+      for (let c = minD; c <= Math.max(0.7, Math.min(maxD, d)) + 1e-6; c += 0.35) {
+        let pen = 0.3 * (c > d ? c - d : d - c);
+        for (let i = 0; i < _nT; i++) {
+          if (T_GAP[i] > T_PULL[i] * 2) continue;
+          const dd = T_OD[i] - c, ov = T_CLR[i] - (dd < 0 ? -dd : dd);
+          if (ov > 0) pen += ov * (T_BIKE[i] ? 1 : T_VO[i] < 0 ? 5 : 3); // (a bike is a shove, a car a wreck)
+        }
+        if (pen < bp) { bp = pen; best = c; }
+      }
+    }
     if (best === best) {
       tgt = best;
-      if (tgt > -0.6 && _nT > 0 && brain.commitT <= 0.2) brain.commitT = 1.4;
+      if ((tgt > LANE_D || tgt > _pref + 0.9 || tgt < _pref - 0.9) && _nT > 0 && brain.commitT <= 0.2) brain.commitT = 1.4;
     }
     // nothing clear to pass through: do not run into what blocks our line
     let ci = -1, cg = 1e9;
     for (let i = 0; i < _nT; i++) {
-      if (T_DS[i] <= 0) continue;
+      if (T_DS[i] <= 0 || (launch && T_BIKE[i])) continue;
       const dd = T_OD[i] - tgt, de = T_OD[i] - d;
-      const blocks = (dd < 0 ? -dd : dd) < T_CLR[i] || ((de < 0 ? -de : de) < T_CLR[i] && T_GAP[i] < 30 + Math.max(0, v - T_VO[i]) * 0.7);
+      const clearsIt = (dd < 0 ? -dd : dd) >= T_CLR[i];
+      const blocks = !clearsIt || ((de < 0 ? -de : de) < T_CLR[i] - 0.25 && T_GAP[i] < 30 + Math.max(0, v - T_VO[i]) * 0.7 && !(brain.commitT > 0 && T_GAP[i] > 5)); // (swinging out round it: the throttle is free, only the hard safety rule below can still hold us)
       if (blocks && T_GAP[i] < cg) { cg = T_GAP[i]; ci = i; }
     }
     // hard safety: something overlapping where we actually are, and we would not stop in time
     for (let i = 0; i < _nT; i++) {
-      if (T_DS[i] <= 0) continue;
+      if (T_DS[i] <= 0 || (launch && T_BIKE[i])) continue;
       const de = T_OD[i] - d;
-      if ((de < 0 ? -de : de) >= T_CLR[i] + 0.1) continue;
+      if ((de < 0 ? -de : de) >= T_CLR[i] - 0.15) continue; // (the lines we choose clear it by T_CLR: only a real overlap holds us here, or a rider could never pass a car it follows closely)
       const cl = v - T_VO[i];
       const aH = 0.45 * Math.min(spec.brake, G * mu); // what a leaning bike can really shed (brake <= 0.5 in a bend)
       if (cl <= 0 || T_GAP[i] > cl * cl / (2 * aH) * 1.15 + cl * 0.6 + 10) continue;
       const hc = Math.sqrt(Math.max(0, T_VO[i] * T_VO[i] + 2 * aH * Math.max(0, T_GAP[i] - 3)));
       if (hc < cap) cap = hc;
     }
-    if (ci >= 0 && (!freeFar || T_GAP[ci] < 30 + Math.max(0, v - T_VO[ci]) * 0.7)) cap = Math.min(cap, followCap(T_VO[ci], T_GAP[ci], 6, T_HALF[ci]));
+    if (ci >= 0 && (!freeFar || T_GAP[ci] < 30 + Math.max(0, v - T_VO[ci]) * 0.7)) cap = Math.min(cap, followCap(T_VO[ci], T_GAP[ci], T_BIKE[ci] ? 1.5 : 6, T_HALF[ci])); // (a bike is followed close: a touch is a shove, not a wreck, and a pack could not accelerate otherwise)
   }
   tgt = clamp(tgt, minD, maxD);
   const rate = diff.laneRate * dt;
@@ -229,38 +304,31 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
     const k = cv[idx];
     const ak = k < 0 ? -k : k;
     if (ak < 2e-4) continue;
-    const kp = ak / Math.max(0.3, 1 - k * dT);
-    const vA = maxCornerSpeed(spec, kp, cornerG, gripA); // the speed at which this bend asks exactly what the bike can give there (the lean ceiling falls with speed)
+    const kp = ak / Math.max(0.3, 1 - k * dT) - A * ak; // the road's assist turns the bike through its share of the bend: only the rest has to be leaned
+    if (kp < 2e-4) continue;
+    const vA = maxCornerSpeed(spec, kp, cornerG, gripA, A); // the speed at which this bend asks exactly what the bike can give there (the lean ceiling falls with speed)
     const vc = Math.sqrt(vA * vA + 2 * aBrake * x);
     if (vc < vCorner) vCorner = vc;
   }
 
   // ---------- speed ----------
-  let vT = brain.cruise; // the rival's own pace, the same on every bike type (the difficulty scales it equally)
-  if (vT > spec.topSpeed * 0.95) vT = spec.topSpeed * 0.95;
+  let vT = paceOf(brain, spec, bst); // the rival's own pace: its level's share of its own bike's top speed (the same share on every type)
   const lead = ctx.leaderS;
   if (lead === lead && lead !== undefined) {
-    const x = clamp((lead - s) / (diff.rbAhead > 0.1 ? 350 : 300), -1, 1);
+    const x = clamp((lead - s) / diff.rbRange, -1, 1);
     vT *= 1 + (x > 0 ? diff.rbBehind : diff.rbAhead) * x;
   }
-  // pack behaviour: near a human (within 50 m ahead or behind) the rival eases toward the human's speed, so the two can ride side by side and
-  // fight: a rival behind a faster human pushes up to its speed (never above 97 % of its own top), a rival level with or ahead of a slower
-  // human lifts to it; a human that is faster than the rival simply pulls away. The matching lasts MATCH_T seconds per encounter (it fades over
-  // the last two), then the rival rides its own pace until the human has been out of range for a few seconds. Pure function of the state, same on every device.
-  {
-    let near = null, nearA = 1e9;
+  // side by side the speeds are nearly equal: closing on a rider within 12 m ahead (in our line, not crawling) stays under about 2 m/s, so a pass is won
+  // beside it (the fight, the other rider lifting or moving aside, the better line, the draft), not by pace. The rubber band above sets who catches whom
+  // over tens of seconds; this only keeps the last metres slow enough to fight. A rider that has gone past is not held by it.
+  if (!launch) {
+    let bd = 12;
     for (let i = 0; i < others.length; i++) {
-      const o = others[i];
-      if (o.kind !== 'human' || o.bike === bike || o.bike.crashed || o.bike.speed < 0.4 * spec.topSpeed) continue; // (a parked or crawling human is not matched: it is passed)
-      const a = Math.abs(o.s - s);
-      if (a < nearA && Math.abs(o.d - d) < 12) { nearA = a; near = o; }
+      const o = others[i], ob = o.bike;
+      if (ob === bike || ob.crashed || o.finished || ob.speed < 0.4 * spec.topSpeed) continue;
+      const ds = o.s - s;
+      if (ds > 0.5 && ds < bd && Math.abs(o.d - d) < 2.4) { bd = ds; const lim = ob.speed + 1.5 + 0.15 * ds; if (lim < vT) vT = lim; }
     }
-    if (near && nearA < PACK_RANGE) {
-      brain.farT = 0; brain.matchT += dt;
-      const w = diff.match * sm01((PACK_RANGE - nearA) / (PACK_RANGE - 8)) * clamp((MATCH_T - brain.matchT) / 2, 0, 1);
-      const vh = clamp(near.bike.speed, 0, spec.topSpeed * 0.97);
-      if (w > 0 && (near.s > s - 2 || vT > vh)) vT += w * (vh - vT);
-    } else { brain.farT += dt; if (brain.farT > 3) brain.matchT = 0; }
   }
   if (mistakeBrake) vT *= 0.55;
   if (brain.done) vT = 0;
@@ -270,11 +338,12 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
   const Lk = Math.max(10, v * 0.8);
   const psiDes = clamp((dT - d) / Lk, -0.3, 0.3);
   // knocked off line (heading far from what we want, or staggering): shed speed so the lean can win it back
-  const lost = Math.abs(psiRel - psiDes) > 0.12 || bike.stagger > 0.2; // (a sideswipe's 0.1 s wobble does not count: two rivals touching side by side at the same speed used to crawl together at the 'lost' speed for the rest of the race)
-  if (lost && vT > 10 * K) vT = Math.max(10 * K, Math.min(vT, v * 0.75));
+  const lost = Math.abs(psiRel - psiDes) > 0.2 || bike.stagger > 0.2; // (a sideswipe's 0.1 s wobble does not count: two rivals touching side by side at the same speed used to crawl together at the 'lost' speed for the rest of the race)
+  if (lost && !launch && vT > 10 * K) vT = Math.max(10 * K, Math.min(vT, v * 0.75));
   // wedged (stopped for seconds without having crashed): roll on through whatever is in the way, slowly
   if (v < 1.5 * K) brain.stuckT += dt; else brain.stuckT = Math.max(0, brain.stuckT - dt);
   if (brain.stuckT > 2 && vT < 6 * K) vT = 6 * K;
+  { const stuck = cap < 1e8 && v < 0.8 * paceOf(brain, spec, bst); brain.waitT = stuck ? brain.waitT + dt : Math.max(0, brain.waitT - 2 * dt); }
   brain.vT = vT; brain.cap = cap; brain.vCorner = vCorner; brain.nT = _nT;
   const err = vT - v;
   const ratio = v / spec.topSpeed;
@@ -289,10 +358,11 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
   let idx0 = ((s + Math.max(0, v) * 0.12) * 0.5) | 0; if (idx0 > nE - 1) idx0 = nE - 1;
   const k0 = cv[idx0];
   const kPath = k0 / Math.max(0.3, 1 - k0 * d);
-  const omega = v * kPath + 2.5 * (psiDes - psiRel);
+  let idxH = (s * 0.5) | 0; if (idxH > nE - 1) idxH = nE - 1;
+  const omega = v * kPath + 2.5 * (psiDes - psiRel) - A * v * cv[idxH]; // (the assist adds A * curve * v of yaw rate by itself: steer only for the rest of the bend)
   const vv = Math.max(v, K);
   let st;
-  const lscNow = leanScaleAt(spec, v);
+  const lscNow = leanScaleAt(spec, v, A);
   const stBar = Math.atan(omega * spec.wheelbase / vv) / 0.5;
   if (lscNow > 0.05) {
     const stLean = Math.atan(omega * vv / LATERAL_G) / (spec.maxLean * lscNow);
@@ -301,30 +371,75 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
   } else st = stBar;
   out.steer = clamp(st / standUpFactor(out.brake), -1, 1); // braking stands the bike up a little: ask for that much more lean
 
-  // ---------- attack ----------
+  // ---------- attack: a small scored choice among punch / kick / wheel kick (and holding fire), against whoever is in reach ----------
   brain.attackT -= dt;
-  if ((ctx.raceT || 0) >= diff.swingStart && brain.attackT <= 0 && bike.stagger <= 0) {
-    let best = null, bestScore = 1e9, bside = 1, bHuman = false;
+  if (brain.hp < 0) brain.hp = bike.health;
+  if (bike.health < brain.hp - 0.05) brain.retalT = 3; // we were hit: hit back, quickly
+  brain.hp = bike.health;
+  brain.retalT -= dt;
+  const hpShare = bike.health / spec.health;
+  const backing = hpShare < diff.backOut;
+  if (backing && !brain.backing) brain.st.backOut++;
+  brain.backing = backing;
+  const retal = brain.retalT > 0;
+  if ((ctx.raceT || 0) >= diff.swingStart && brain.attackT <= 0 && bike.stagger <= 0 && !brain.done && !backing) {
+    let bestSc = -1e9, bside = 1, bweapon = null, bwheel = false, bhz = 0, btarget = null;
+    const noisy = diff.sight < 0.3;
     for (let i = 0; i < others.length; i++) {
       const o = others[i], ob = o.bike;
-      if (ob === bike || ob.crashed) continue;
+      if (ob === bike || ob.crashed || o.finished) continue;
       const ds = o.s - s;
       if (ds > 2.2 || ds < -2.2) continue;
-      const lat = o.d - d;
-      const al = lat < 0 ? -lat : lat;
+      const lat = o.d - d, al = lat < 0 ? -lat : lat;
       if (al < 0.35 || al > 2.6) continue;
-      const hu = o.kind === 'human';
-      const sc = al + (hu ? -0.5 : 0);
-      if (sc < bestScore) { bestScore = sc; best = ob; bside = lat > 0 ? 1 : -1; bHuman = hu; }
+      const side = lat > 0 ? 1 : -1;
+      const hP = meleeHit(bike, ob, 'punch', side, false), hK = meleeHit(bike, ob, 'kick', side, false);
+      if (!hP && !hK) continue;
+      const wear = 1 - ob.health / ob.spec.health;
+      const base = 0.4 + (o === foe ? 0.6 : 0) + 0.4 * wear + (retal ? 0.5 : 0);
+      if (hP) { const sc = base + 0.6 + (brain.weapon === 'punch' ? 0.15 : 0) + (noisy ? 0.5 * brain.rand() : 0); if (sc > bestSc) { bestSc = sc; bside = side; bweapon = 'punch'; bwheel = false; bhz = 0; btarget = o; } }
+      if (hK) {
+        let hz = 0, sc;
+        if (hK.wheel) { hz = hazardOf(o, side, ctx); sc = base + 0.9 + diff.sight * 1.6 * hz + (brain.weapon === 'kick' ? 0.15 : 0); } else sc = base + 0.5 + (brain.weapon === 'kick' ? 0.15 : 0);
+        if (noisy) sc += 0.5 * brain.rand();
+        if (sc > bestSc) { bestSc = sc; bside = side; bweapon = 'kick'; bwheel = !!hK.wheel; bhz = hz; btarget = o; }
+      }
     }
-    if (best) {
-      const h = meleeHit(bike, best, brain.weapon, bside, false); // the rivals judge a swing by the old, tighter reach: their attack rate is unchanged
-      if (h) {
-        brain.attackT = (0.5 + (1 - brain.aggression) * 2.2) * (bHuman ? diff.swingCd : 1);
-        const p = bHuman ? Math.min(1, brain.aggression * diff.swingP) : brain.aggression * 0.2;
-        if (brain.rand() < p) { brain.side = bside; out.attackSide = bside; out.attack = bHuman ? brain.weapon : brain.weaponAI; }
-      } else brain.attackT = 0.08;
-    } else brain.attackT = 0.1;
-  }
+    // hold fire unless the opening is worth it (more demanding when hurt)
+    if (bweapon && bestSc > 0.85 + Math.max(0, 0.5 - hpShare) * 2) {
+      // the dice are rolled when an opening starts and again every 1.5 s it lasts (an opening that goes on is a fresh chance)
+      brain.rollT -= dt;
+      if (brain.openT <= 0 || (!brain.openTake && brain.rollT <= 0)) { brain.openTake = retal || brain.rand() < clamp(diff.take * (0.55 + 0.9 * brain.aggression), 0, 1); brain.rollT = 1.5; }
+      brain.openT += dt;
+      const need = diff.react * (0.8 + 0.4 * (1 - brain.aggression)) * (retal ? 0.5 : 1);
+      if (brain.openTake && brain.openT >= need) {
+        out.attack = bweapon; out.attackSide = bside; brain.side = bside;
+        brain.attackT = diff.swingCd * (0.25 + 0.5 * (1 - brain.aggression)); // recovery: the weapon's own cycle comes on top
+        brain.openT = 0;
+        if (bweapon === 'punch') brain.st.punch++; else if (bwheel) { brain.st.wheel++; if (bhz > 0.5) brain.st.wheelHazard++; } else brain.st.kick++;
+        if (btarget && brain.tracked === btarget.bike) brain.trackSwung = true;
+        else brain.trackSwung = brain.trackSwung || (btarget === foe);
+      }
+    } else { if (bweapon) brain.st.holdFire++; brain.openT = brain.openT > dt * 2 ? brain.openT - dt * 2 : 0; }
+  } else if (brain.attackT > 0 || backing) brain.openT = 0;
   return out;
+}
+
+/** How dangerous is the place a wheel kick from `side` would shove rider `o` to: off the tarmac while off balance, into a car ahead, into an oncoming car (0..1.6). */
+function hazardOf(o, side, ctx) {
+  const hw = ctx.track.halfWidth, nd = o.d + side * 1.4;
+  let hz = 0;
+  if (nd > hw - 0.3 || nd < -(hw - 0.3)) hz += 1;
+  const cars = ctx.cars;
+  if (cars) {
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i];
+      if (!c.active) continue;
+      const ahead = c.s - o.s;
+      if (ahead < -2 || ahead > (c.vs < 0 ? 45 : 35)) continue;
+      const lat = c.d - nd;
+      if ((lat < 0 ? -lat : lat) < c.wid * 0.5 + 0.7 && (c.vs < 0 || o.bike.speed - c.vs > 2)) { hz += c.vs < 0 ? 1.2 : 0.9; break; }
+    }
+  }
+  return hz < 1.6 ? hz : 1.6;
 }

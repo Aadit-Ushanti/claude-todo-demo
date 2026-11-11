@@ -35,7 +35,16 @@ const GHOST_T = 1.5;
 const REMOUNT_EDGE = 0.9;
 const PLACE_EPS = 0.02; // metres: riders closer than this keep their order (the grid order at the start, stable side by side)
 const FINISH_GRACE_T = 20;
+/**
+ * Slipstream: a bike 2.5-16 m behind another one (centres along the road), within DRAFT_HALF_W m sideways, both moving, rides in its wake:
+ * strength 0..1 (best close behind and centred, zero at the edges of the zone and once it pulls out alongside), eased over DRAFT_EASE seconds;
+ * the bike's boost (acceleration and top speed) is multiplied by 1 + DRAFT_GAIN * draft. Everybody, humans and rivals, the same rule.
+ */
+export const DRAFT_GAIN = 0.03, DRAFT_EASE = 0.5, DRAFT_NEAR = 2.5, DRAFT_FAR = 16, DRAFT_HALF_W = 1.3;
+/** Humans get no catch-up boost during the first HUMAN_BOOST_FROM seconds of racing, then it fades in over HUMAN_BOOST_FADE seconds. */
+const HUMAN_BOOST_FROM = 10, HUMAN_BOOST_FADE = 4;
 const CAR_MASS = 1300;
+const CAR_MU_REF = 295 * CAR_MASS / (295 + CAR_MASS); // reduced mass of a 295 kg bike against a car
 const K = SPEED_SCALE; // every speed threshold below is the old number times K: a crash needs the same share of top speed as before
 const MAX_EVENTS = 512;
 
@@ -231,7 +240,7 @@ function swingAt(race, r, side, forgiving) {
     if (!h) continue;
     if (r.kind === 'ai' && v.kind === 'ai') { // rivals pull their punches against each other so the field does not wreck itself
       h.damage *= 0.5; h.stagger *= 0.5; h.impulse.x *= 0.35; h.impulse.y *= 0.35; h.impulse.z *= 0.35;
-      if (h.shove) { h.shove.x *= 0.35; h.shove.z *= 0.35; }
+      if (h.shove) { h.shove.x *= 0.7; h.shove.z *= 0.7; } // (a wheel kick between rivals keeps most of its shove: it is the way to put a rider onto the shoulder or into traffic; blows and damage stay softened)
     }
     if (v.remote) {
       pushEvent(race, { type: 'hit', from: r.slot, to: v.slot, hit: h, id: ((++race.hitSeq) << 8) | (r.slot << 4) | v.slot });
@@ -345,7 +354,10 @@ function carContacts(race, r, c) {
   if (closing <= 0.2 * K) return;
   _n.x = nx; _n.y = 0; _n.z = nz;
   _carLike.vel.x = c.vel.x; _carLike.vel.z = c.vel.z;
-  const sev = crashSeverity(b, _carLike, _n, K);
+  // a crash against a car is judged on the speed alone: the heavier bike carries more energy but is just as sturdy, so the reduced-mass term is divided out
+  // (it used to make the cruiser wipe out the most and the sport the least against the same traffic, a difference a player felt as a slower bike)
+  const mb0 = b.spec.mass, muB = mb0 * CAR_MASS / (mb0 + CAR_MASS);
+  const sev = crashSeverity(b, _carLike, _n, K * Math.sqrt(muB / CAR_MU_REF) * (b.spec.carSturdy || 1));
   const oncoming = c.dir < 0 && !c.hit;
   if (!c.hit) {
     c.hit = true; c.hv = true;
@@ -608,6 +620,24 @@ export function catchUpBoost(place, total) {
   if (f < CATCH_UP.from - 1e-9) return 1;
   return CATCH_UP.first + (CATCH_UP.last - CATCH_UP.first) * (f - CATCH_UP.from) / (1 - CATCH_UP.from);
 }
+function draftWanted(race, r) {
+  const b = r.bike;
+  if (b.crashed || b.speed < 0.3 * b.spec.topSpeed) return 0;
+  const riders = race.riders;
+  let best = 0;
+  for (let i = 0; i < riders.length; i++) {
+    const o = riders[i];
+    if (o === r || o.bike.crashed || o.finished || o.bike.speed < 0.3 * o.bike.spec.topSpeed) continue;
+    const gap = o.s - r.s;
+    if (gap < DRAFT_NEAR || gap > DRAFT_FAR) continue;
+    const lat = o.d - r.d, al = lat < 0 ? -lat : lat;
+    if (al >= DRAFT_HALF_W) continue;
+    const fl = 1 - (gap - DRAFT_NEAR) / (DRAFT_FAR - DRAFT_NEAR), fw = 1 - al / DRAFT_HALF_W;
+    const w = fl * (2 - fl) * fw * (2 - fw); // plateau-ish near the maximum, zero at the edges
+    if (w > best) best = w;
+  }
+  return best;
+}
 function clampC(x, a, b) { return x < a ? a : x > b ? b : x; }
 function updatePlaces(race) {
   const ord = race._order;
@@ -652,6 +682,8 @@ export function stepRace(race, dt, localInputs) {
   let lead = NaN;
   for (let i = 0; i < riders.length; i++) { const r = riders[i]; if (r.kind === 'human' && !(lead >= r.s)) lead = r.s; }
   race.leaderS = lead;
+  let front = -1e9; // the race leader, whoever it is
+  for (let i = 0; i < riders.length; i++) if (riders[i].s > front) front = riders[i].s;
 
   const ctx = race._ctx;
   ctx.racing = racing; ctx.raceT = raceT; ctx.leaderS = lead; ctx.cars = race.traffic;
@@ -681,15 +713,33 @@ export function stepRace(race, dt, localInputs) {
     si.throttle = inp.throttle; si.brake = inp.brake; si.steer = inp.steer; si.attack = inp.attack; si.attackSide = inp.attackSide;
     track._hint = r.s; // per-rider hint for the shared Track scratch search
     r.sx = b.pos.x; r.sz = b.pos.z;
-    // arcade cornering assist for the players (see ROAD_ASSIST in BikePhysics.js): the road's bend at the rider's position
-    if (!r.brain && race.assist !== false) { b.assist = ROAD_ASSIST; b.roadCurve = track.sampleAt(Math.max(0, Math.min(r.s, track.length)), _sm).curve; }
+    // arcade cornering assist for every rider, the AI too (see ROAD_ASSIST in BikePhysics.js): the road's bend at the rider's position
+    if (race.assist !== false) { b.assist = ROAD_ASSIST; b.roadCurve = track.sampleAt(Math.max(0, Math.min(r.s, track.length)), _sm).curve; }
     else { b.assist = 0; b.roadCurve = 0; }
-    // catch-up boost for human riders, from the live place; eased so a place swap never jerks the bike
-    if (!r.brain && race.catchUp !== false) {
-      const want = racing ? catchUpBoost(r.place, riders.length) : 1;
-      const cur = b.boost > 0 ? b.boost : 1;
-      b.boost = cur + clampC(want - cur, -0.04 * dt, 0.04 * dt);
-    } else b.boost = 1;
+    // catch-up boost (a factor on acceleration and top speed, eased so a place swap never jerks the bike): by live place for the humans, by distance
+    // behind the best human / the race leader for the rivals; times the slipstream of the bike ahead (everybody, same rule)
+    let pb = r.placeBoost > 0 ? r.placeBoost : 1;
+    if (race.catchUp !== false) {
+      if (!r.brain) {
+        // no boost (and no leader penalty) for the first HUMAN_BOOST_FROM seconds of racing, then it fades in over HUMAN_BOOST_FADE
+        const want = racing && raceT > HUMAN_BOOST_FROM ? 1 + (catchUpBoost(r.place, riders.length) - 1) * clampC((raceT - HUMAN_BOOST_FROM) / HUMAN_BOOST_FADE, 0, 1) : 1;
+        pb += clampC(want - pb, -0.04 * dt, 0.04 * dt);
+      } else {
+        const df = r.brain.diff;
+        let want = 1;
+        if (racing) {
+          if (lead === lead) want += df.aiBoost * clampC((lead - r.s - 12) / 90, 0, 1);
+          const st = 1 + df.strag * clampC((front - r.s - 150) / 300, 0, 1);
+          if (st > want) want = st;
+        }
+        pb += clampC(want - pb, -0.05 * dt, 0.05 * dt);
+      }
+    } else pb = 1;
+    r.placeBoost = pb;
+    const dwant = racing && race.draft !== false ? draftWanted(race, r) : 0;
+    const dcur = b.draft > 0 ? b.draft : 0;
+    b.draft = dcur + clampC(dwant - dcur, -dt / DRAFT_EASE, dt / DRAFT_EASE);
+    b.boost = pb * (1 + DRAFT_GAIN * b.draft);
     stepBike(b, si, dt, track);
     if (r.ghost > 0) r.ghost -= dt;
     if (b.offBal > 0) b.offBal -= dt;

@@ -458,6 +458,7 @@ function showChampResults() {
     place: r.place, name: nameOf(r.id), me: r.id === mySlot, kind: c.riders.find((x) => x.id === r.id).human ? 'human' : 'ai', bike: c.riders.find((x) => x.id === r.id).bike,
     time: r.timeS != null ? hud.fmt(r.timeS) : `${r.togo} m to go`, pts: `+${r.points}`,
   }));
+  input.setTouchVisible(false); // the touch buttons must not sit on top of the results
   hud.showResults({
     rows, again: false,
     title: mine ? `You finished ${ord(mine.place)} of ${TOTAL} and scored ${mine.points} points` : 'Race over',
@@ -724,6 +725,7 @@ function openResults() {
     return { place: r.place, name: mine ? 'You' : nameOf(r.slot), me: mine, kind: r.kind === 'human' ? 'human' : 'ai', bike: r.bike.spec.id, time: r.finished ? hud.fmt(r.finishT) : `${Math.max(0, Math.round(race.track.finishS - r.s))} m to go` };
   });
   const solo = state.mode === 'solo';
+  input.setTouchVisible(false); // the touch buttons must not sit on top of the results
   hud.showResults({
     rows, title: `You finished ${ord(me.place)} of ${TOTAL}${me.finished ? ' in ' + hud.fmt(me.finishT) : ''}`,
     again: !session.champ, againText: solo || nm.isAuthority ? 'Race again' : 'Waiting for host...', againDisabled: !solo && !nm.isAuthority,
@@ -884,7 +886,7 @@ function frame(now) {
     last = now;
     if (race && state.screen === 'race') {
       tickRace(now, dtReal);
-      if (race && !NORENDER) { renderFrame(dtReal, acc / SIM_DT); updateHud(); }
+      if (race && !NORENDER) { renderFrame(state.paused ? 0 : dtReal, acc / SIM_DT); updateHud(); } // paused: the picture stands still (no camera shake)
       else if (race) updateHud();
       if (race) audioFrame(dtReal);
     } else if (state.screen === 'break') {

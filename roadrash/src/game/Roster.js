@@ -137,20 +137,21 @@ const CRUISE_SCALE = SPEED_SCALE;
  * A rival's personality: deterministic from the slot only.
  * @param {number} slot grid slot 0..14
  * @param {string} [difficulty] level id; only the weapon mix depends on it (harder = more kickers)
- * @returns {{slot:number, specId:string, cruise:number, aggression:number, weapon:string, laneD:number, cornerG:number, brakeG:number, wobble:number}}
- *   cruise: m/s the rider holds on a clear straight; aggression 0..1; laneD: preferred lateral offset (negative = right of centre);
+ * @returns {{slot:number, specId:string, cruise:number, pace01:number, aggression:number, weapon:string, laneD:number, cornerG:number, brakeG:number, wobble:number}}
+ *   cruise: legacy m/s the rider held on a clear straight (the brain now paces as a share of its bike's top speed, see Difficulty.js / RivalAI.paceOf); pace01: the rider's 0..1 draw inside the level's narrow pace band; aggression 0..1; laneD: preferred lateral offset (negative = right of centre);
  *   cornerG / brakeG: share of the bike's lean-limited cornering / braking capability it uses
  */
 export function personality(slot, difficulty = 'medium') {
   const r = mulberry32(slot * 7919 + 104729);
   const specId = BIKE_TYPES[Math.floor(r() * BIKE_TYPES.length)]; // legacy default only: the race assigns bikes with assignBikes
-  const cruise = (37 + 12 * r()) * CRUISE_SCALE; // the same on every bike type: the pace is the rider's, the bike's strengths are in the physics
+  const pace01 = r();
+  const cruise = (37 + 12 * pace01) * CRUISE_SCALE; // the same on every bike type: the pace is the rider's, the bike's strengths are in the physics
   const aggression = 0.15 + 0.8 * r();
   const w = r();
   const cut = difficultyParams(difficulty).weapon;
   const weapon = w < cut[1] ? WEAPON_IDS[0] : WEAPON_IDS[1]; // most rivals punch; the share of kickers grows with the level
   return {
-    slot, specId, cruise, aggression, weapon,
+    slot, specId, cruise, pace01, aggression, weapon,
     laneD: -0.9 - 2.5 * r(),
     cornerG: 0.6 + 0.2 * r(),
     brakeG: 0.4 + 0.12 * r(),

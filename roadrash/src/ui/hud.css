@@ -183,3 +183,6 @@ body:has(.touch-controls:not([hidden])) .rr-a2hs { display: none; }
 .rr-audio-vol { flex: 1 1 auto; min-width: 0; height: 36px; accent-color: #ff7a1a; touch-action: manipulation; }
 .rr-audio-vol:disabled { opacity: 0.4; }
 /* end audio controls */
+
+/* the touch buttons never sit on top of a menu (results, pause, final standings) */
+body:has(.hud-modal:not([hidden])) .touch-controls { display: none; }
