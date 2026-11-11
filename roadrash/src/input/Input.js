@@ -144,8 +144,8 @@ export function createInput(target) {
     overlay = document.createElement('div');
     overlay.className = 'touch-controls';
     overlay.hidden = true;
-    // layout: GAS bottom left; steer arrows and BRAKE bottom right; one set of attacks at mid height on each side (same buttons for either thumb; the swing side is automatic),
-    // steer arrows inside the pedals (dimmed while tilt steering is on), tilt switch bottom centre
+    // layout: GAS at mid height on the left edge; steer arrows and BRAKE at mid height on the right edge; one row of attacks in each
+    // bottom corner (same buttons for either thumb; the swing side is automatic); tilt switch bottom centre
     const atk = (sd, cls) => `<div class="tc-atk ${cls}">` +
       `<button data-a="punch" data-as="${sd}">PUNCH</button>` +
       `<button data-a="baton" data-as="${sd}">BATON</button>` +

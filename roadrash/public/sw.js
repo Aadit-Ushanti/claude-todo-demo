@@ -1,6 +1,6 @@
 // Bump VERSION whenever any shell file changes so clients pick up the new code.
 // The PRECACHE list is generated: node tests/e2e/gen-precache.mjs (an e2e test fails when it is stale or incomplete).
-const VERSION = 'v5-845ea4f9-c2';
+const VERSION = 'v5-845ea4f9-c3';
 const CACHE = `road-rash-${VERSION}`;
 
 // BEGIN PRECACHE

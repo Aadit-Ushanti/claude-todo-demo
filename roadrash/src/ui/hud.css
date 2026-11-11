@@ -89,10 +89,11 @@ body {
 /* touch controls: shown only on touch devices (created by Input.js) */
 .touch-controls { position: fixed; inset: 0; z-index: 2; pointer-events: none; }
 .touch-controls[hidden] { display: none; }
-.tc-pedal-l, .tc-pedal-r { position: absolute; bottom: 3vh; display: flex; align-items: flex-end; gap: 10px; }
+/* pedals and steer arrows at mid height on the edges (where the thumbs rest); attack rows in the bottom corners */
+.tc-pedal-l, .tc-pedal-r { position: absolute; top: 50%; transform: translateY(-46%); display: flex; align-items: center; gap: 10px; }
 .tc-pedal-l { left: max(3vw, env(safe-area-inset-left, 0px)); }
 .tc-pedal-r { right: max(3vw, env(safe-area-inset-right, 0px)); }
-.tc-atk { position: absolute; top: 50%; transform: translateY(-46%); display: flex; flex-direction: column; gap: 8px; }
+.tc-atk { position: absolute; bottom: 3vh; display: flex; flex-direction: row; gap: 8px; }
 .tc-atk-l { left: max(3vw, env(safe-area-inset-left, 0px)); }
 .tc-atk-r { right: max(3vw, env(safe-area-inset-right, 0px)); }
 .touch-controls .tc-left, .touch-controls .tc-right { min-width: 78px; min-height: 78px; font-size: 28px; }
