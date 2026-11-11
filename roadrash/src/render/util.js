@@ -180,3 +180,13 @@ export function patchMasked(mat, paint = 0xffffff, suit = 0xffffff, helm = 0xfff
   mat.customProgramCacheKey = () => 'masked2';
   return u;
 }
+
+/**
+ * Draw-size multiplier for the bike, rider and traffic models (1 = true size). Draw-only: the road, the scenery and every hit area
+ * keep their sizes. `?ms=1.05` in the page address overrides it (used for the size comparison shots).
+ */
+export const MODEL_SCALE = (() => {
+  let v = 1;
+  try { const q = parseFloat(new URLSearchParams(globalThis.location ? globalThis.location.search : '').get('ms')); if (q > 0.5 && q < 2) v = q; } catch { /* not in a page */ }
+  return v;
+})();

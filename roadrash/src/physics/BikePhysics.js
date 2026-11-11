@@ -212,6 +212,14 @@ const LEAN_FALL_V0 = 34 * K;
 const LEAN_FALL_V1 = 54 * K;
 /** hsLeanLoss is the share of lean authority a bike loses at very high speed; the ceiling falls this many times faster than the raw share. */
 const LEAN_FALL_GAIN = 2.1;
+/**
+ * Arcade cornering for the players' bikes (Race.js sets bike.assist and bike.roadCurve every tick; AI bikes have assist 0):
+ *  - ROAD_ASSIST of the road's bend is turned for the rider automatically (yaw rate = assist * curve * speed), so what is
+ *    left of the bend is felt as a push toward the outside that grows with curve * speed; the rider steers against it;
+ *  - ASSIST_LEAN_KEEP: share of the high-speed steering loss an assisted bike still suffers (the rest is given back);
+ *  - OFF_GAS_DECEL: extra slow-down (m/s^2) with the throttle closed, in place of a brake (the players have none).
+ */
+export const ROAD_ASSIST = 0.85, ASSIST_LEAN_KEEP = 0.45, OFF_GAS_DECEL = 2.2 * K;
 
 /**
  * Share (0..1) of the bike's maxLean that full steer commands at speed v: it rises from 0 at a standstill to 1 by about 12 K m/s (the bars do
@@ -221,8 +229,10 @@ const LEAN_FALL_GAIN = 2.1;
  * @param {number} v speed (m/s)
  * @returns {number} 0..1
  */
-export function leanScaleAt(spec, v) {
-  return smooth01((v - 2 * K) / (10 * K)) * (1 - Math.min(0.92, spec.hsLeanLoss * LEAN_FALL_GAIN) * smooth01((v - LEAN_FALL_V0) / (LEAN_FALL_V1 - LEAN_FALL_V0)));
+export function leanScaleAt(spec, v, assist = 0) {
+  // an assisted (player) bike keeps more of its steering at high speed: there is no brake, so the bars must still bite at top speed
+  const loss = Math.min(0.92, spec.hsLeanLoss * LEAN_FALL_GAIN) * (assist > 0 ? ASSIST_LEAN_KEEP : 1);
+  return smooth01((v - 2 * K) / (10 * K)) * (1 - loss * smooth01((v - LEAN_FALL_V0) / (LEAN_FALL_V1 - LEAN_FALL_V0)));
 }
 
 /**
@@ -282,6 +292,7 @@ export function stepBike(bike, input, dt, track) {
   // off the tarmac (shoulder 0.1, off-road 0.3): the surface drags the bike down; it never feeds the slide
   const rough = air ? 0 : 1 - gripNow;
   if (rough > 0 && v > 0) decel += rough * (0.9 * K + 0.3 * v);
+  if (b.assist > 0 && !air && thr <= 0 && !b.crashed) decel += OFF_GAS_DECEL * (1 - thr); // closing the throttle is the player's brake
   let vNew = v + a * dt;
   if (v > 0) { vNew -= decel * dt; if (vNew < 0) vNew = 0; }
   else if (vNew < 0) vNew = 0;
@@ -290,7 +301,7 @@ export function stepBike(bike, input, dt, track) {
   b.speed = v;
 
   // ---- lean ----
-  const leanScale = leanScaleAt(s, v);
+  const leanScale = leanScaleAt(s, v, b.assist || 0);
   // braking while leaned stands the bike up a little (the harder the brake, the more), so the line holds as the speed drops
   const standUp = standUpFactor(brk);
   // a rough surface unsettles the bars a little (deterministic: a function of where the bike is)
@@ -339,6 +350,7 @@ export function stepBike(bike, input, dt, track) {
   const yawBar = v * Math.tan(delta) / s.wheelbase;
   const w = smooth01((v - 3 * K) / (6 * K));
   let cmd = w * yawL + (1 - w) * yawBar + yawDrift + b.yawKick;
+  if (b.assist > 0 && !air) cmd += b.assist * (b.roadCurve || 0) * v; // the road carries an assisted bike round most of the bend
   if (b.crashed) cmd = b.yawKick;
   if (air) cmd *= 0.3;
   b.yawRate += (cmd - b.yawRate) * (1 - Math.exp(-K_YAW * dt));

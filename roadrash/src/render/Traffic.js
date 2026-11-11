@@ -2,7 +2,7 @@
 import * as THREE from '../../public/vendor/three.module.min.js';
 import { GLTFLoader } from '../../public/vendor/GLTFLoader.js';
 import { mergeGeometries } from '../../public/vendor/BufferGeometryUtils.js';
-import { patchMasked } from './util.js';
+import { patchMasked, MODEL_SCALE } from './util.js';
 import { makeGlowTex } from './Look.js';
 
 const URL_OF = (t) => new URL(`../../assets/models/traffic_${t}.glb`, import.meta.url).href;
@@ -123,6 +123,7 @@ export function createTraffic(scene, shadow, camera) {
       const cdx = camPos ? car.pos.x - camPos.x : 0, cdz = camPos ? car.pos.z - camPos.z : 0;
       m.visible = !(cdx * camFx + cdz * camFz < -6 && cdx * cdx + cdz * cdz > 100);
       m.position.set(car.pos.x, car.pos.y, car.pos.z);
+      if (m.scale.x !== MODEL_SCALE) m.scale.setScalar(MODEL_SCALE);
       m.rotation.set(0, car.yaw, 0);
       // crashed/hit cars just stay put; tilt a bit when hit for readability
       if (car.hit) m.rotation.z = 0.12;

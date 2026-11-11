@@ -1,4 +1,4 @@
-const HOLD = { ArrowUp: 'throttle', KeyW: 'throttle', ArrowDown: 'brake', KeyS: 'brake', ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right' };
+const HOLD = { ArrowUp: 'throttle', KeyW: 'throttle', ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right' };
 const ATTACK = { KeyJ: 'punch', KeyK: 'kick' };
 const SIDE = { KeyQ: 1, KeyE: -1 };
 const PAD_ATTACK = { 0: 'punch', 2: 'kick' };
@@ -144,18 +144,17 @@ export function createInput(target) {
     overlay = document.createElement('div');
     overlay.className = 'touch-controls';
     overlay.hidden = true;
-    // layout: GAS at mid height on the left edge; steer arrows and BRAKE at mid height on the right edge; one row of attacks in each
+    // layout (there is no brake: closing the gas slows the bike): steer arrows at mid height on the left edge, GAS on the right edge; one row of attacks in each
     // bottom corner (same buttons for either thumb; the swing side is automatic); tilt switch bottom centre
     const atk = (sd, cls) => `<div class="tc-atk ${cls}">` +
       `<button data-a="punch" data-as="${sd}">PUNCH</button>` +
       `<button data-a="kick" data-as="${sd}">KICK</button></div>`;
     overlay.innerHTML =
       atk(1, 'tc-atk-l') + atk(-1, 'tc-atk-r') +
-      '<div class="tc-pedal-l"><button data-h="throttle" class="tc-gas">GAS</button></div>' +
-      '<div class="tc-pedal-r">' +
+      '<div class="tc-pedal-l">' +
       '<button data-h="left" class="tc-left" aria-label="Steer left">&#9664;</button>' +
-      '<button data-h="right" class="tc-right" aria-label="Steer right">&#9654;</button>' +
-      '<button data-h="brake" class="tc-brake">BRAKE</button></div>' +
+      '<button data-h="right" class="tc-right" aria-label="Steer right">&#9654;</button></div>' +
+      '<div class="tc-pedal-r"><button data-h="throttle" class="tc-gas">GAS</button></div>' +
       '<button data-tilt="1" class="tc-tilt">TILT: OFF</button>';
     overlay.addEventListener('pointerdown', onBtnDown);
     tiltBtn = overlay.querySelector('.tc-tilt');
@@ -169,7 +168,7 @@ export function createInput(target) {
   Object.assign(api, {
     read() {
       if (forced) {
-        out.throttle = forced.throttle || 0; out.brake = forced.brake || 0; out.steer = forced.steer || 0;
+        out.throttle = forced.throttle || 0; out.brake = 0; out.steer = forced.steer || 0; // (no brake for the test pilot either)
         out.attack = forced.attack || null; out.attackSide = forced.attackSide || 1; out.sideAuto = forced.sideAuto !== false && !forced.attackSide;
         return out;
       }
@@ -203,7 +202,7 @@ export function createInput(target) {
       touchSteer = tiltOn ? tiltSteer : 0;
       out.steer = [kbSteer, touchSteer, padSteer].reduce((m, v) => (Math.abs(v) > Math.abs(m) ? v : m), 0);
       out.throttle = Math.max(kb.throttle ? 1 : 0, tc.throttle ? 1 : 0, padThrottle);
-      out.brake = Math.max(kb.brake ? 1 : 0, tc.brake ? 1 : 0, padBrake);
+      out.brake = 0; // the players have no brake: closing the throttle slows the bike (OFF_GAS_DECEL in BikePhysics.js)
       out.attack = pending;
       if (sideMode !== 0) { out.attackSide = sideMode; out.sideAuto = false; }
       else { out.attackSide = side; out.sideAuto = !(kb.sideHeld || now() - sideAt < MANUAL_SIDE_MS); }

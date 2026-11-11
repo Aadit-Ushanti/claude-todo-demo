@@ -11,7 +11,7 @@
 //                                     also gets rider.hitFx = {t, side, weapon, strength}, a visual-only predicted stagger)
 //   {type:'blow', from, to, damage}   a swing that landed on a rider simulated here (already applied)
 //   {type:'carhit', id, slot}         a rider hit a traffic car
-import { DT, createBike, stepBike, meleeHit, applyHit, contactShare, swingCooldown, WEAPONS, SPEED_SCALE } from '../physics/BikePhysics.js';
+import { DT, createBike, stepBike, meleeHit, applyHit, contactShare, swingCooldown, WEAPONS, SPEED_SCALE, ROAD_ASSIST } from '../physics/BikePhysics.js';
 import { crashSeverity, createDestruction, spawnRagdoll, spawnDebris, stepDestruction } from '../physics/DestructionSystem.js';
 import { createTraffic, stepTraffic } from './Traffic.js';
 import { createBrain, rivalInput } from '../ai/RivalAI.js';
@@ -87,7 +87,7 @@ export function createRace(opts) {
   const race = {
     track, seed, difficulty: normalizeDifficulty(opts.difficulty), t: 0, tick: 0, phase: 'grid', countdown: COUNTDOWN, goT: COUNTDOWN,
     authority: opts.authority === 'guest' ? 'guest' : 'host',
-    rng: mulberry32(seed ^ 0x5eed), humanSpec: opts.humanSpec || 'street', catchUp: opts.catchUp !== false,
+    rng: mulberry32(seed ^ 0x5eed), humanSpec: opts.humanSpec || 'street', catchUp: opts.catchUp !== false, assist: opts.assist !== false,
     riders: [], traffic: createTraffic(track, seed),
     destruction: createDestruction({ maxDebris: 96, maxRagdolls: 12, seed: seed ^ 0xd35 }),
     events: [], appliedHits: new Set(), _appliedRing: [], localSlots: (opts.localSlots || [0]).slice(), humanSlots: [], leaderS: NaN,
@@ -681,6 +681,9 @@ export function stepRace(race, dt, localInputs) {
     si.throttle = inp.throttle; si.brake = inp.brake; si.steer = inp.steer; si.attack = inp.attack; si.attackSide = inp.attackSide;
     track._hint = r.s; // per-rider hint for the shared Track scratch search
     r.sx = b.pos.x; r.sz = b.pos.z;
+    // arcade cornering assist for the players (see ROAD_ASSIST in BikePhysics.js): the road's bend at the rider's position
+    if (!r.brain && race.assist !== false) { b.assist = ROAD_ASSIST; b.roadCurve = track.sampleAt(Math.max(0, Math.min(r.s, track.length)), _sm).curve; }
+    else { b.assist = 0; b.roadCurve = 0; }
     // catch-up boost for human riders, from the live place; eased so a place swap never jerks the bike
     if (!r.brain && race.catchUp !== false) {
       const want = racing ? catchUpBoost(r.place, riders.length) : 1;

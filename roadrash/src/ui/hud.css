@@ -171,7 +171,6 @@ body {
   #hud, .touch-controls { bottom: auto; height: calc(100dvh / var(--ui, 1)); } /* zoomed boxes: lengths are multiplied by --ui */
 }
 #hud, .touch-controls { zoom: var(--ui, 1); }
-.tc-pedal-r .tc-brake { order: 3; }
 /* phones in a browser tab cannot hide the browser bars by themselves */
 .rr-a2hs { position: fixed; left: 50%; top: max(6px, env(safe-area-inset-top, 0px)); transform: translateX(-50%); z-index: 61; display: none; padding: 4px 10px; border-radius: 6px; background: rgba(0, 0, 0, 0.6); color: #f4f1ea; font: 600 11px/1.3 system-ui, -apple-system, sans-serif; pointer-events: none; white-space: nowrap; }
 @media (pointer: coarse) and (display-mode: browser) { .rr-a2hs { display: block; } }

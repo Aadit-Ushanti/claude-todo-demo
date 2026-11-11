@@ -1,7 +1,7 @@
 // LEGACY procedural low-poly motorbike + rider (shapes built in code, no textures). Kept as the fallback shown until the
 // textured models of Bikes.js (assets/bikes/*.glb) have loaded. Also owns the LIVERIES table.
 import * as THREE from '../../public/vendor/three.module.min.js';
-import { Mesher, patchMasked, ss, clamp } from './util.js';
+import { Mesher, patchMasked, ss, clamp, MODEL_SCALE } from './util.js';
 
 const WR = 0.33;
 const REAR = [0, WR, 0.70];
@@ -200,6 +200,7 @@ export function createProcRiders(scene, shadow) {
     shadow.set(slot, vis ? b.pos.x : 0, b.pos.y, b.pos.z, b.yaw, vis ? 1 : 0);
     if (!vis) return;
     root.position.set(b.pos.x, b.pos.y, b.pos.z);
+    if (root.scale.x !== MODEL_SCALE) root.scale.setScalar(MODEL_SCALE);
     // real shadows only for the player and riders within a few metres of the camera (blob shadows cover the rest)
     if (shadowQ === 'high') {
       const dx = b.pos.x - camPos.x, dz = b.pos.z - camPos.z, want = slot === 0 || dx * dx + dz * dz < 12 * 12;

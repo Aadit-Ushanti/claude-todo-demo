@@ -28,7 +28,7 @@ import { GLTFLoader } from '../../public/vendor/GLTFLoader.js';
 import { mergeGeometries } from '../../public/vendor/BufferGeometryUtils.js';
 import { fogPatch } from './Look.js';
 import { LIVERIES, createProcRiders } from './BikesProc.js';
-import { clamp, ss } from './util.js';
+import { clamp, ss, MODEL_SCALE } from './util.js';
 
 export { LIVERIES };
 const TYPES = ['sport', 'street', 'chopper'];
@@ -572,12 +572,13 @@ function poseRig(rig, b, info, dt, lodWant) {
   const wk = (info && info.weapon) || 'punch';
   const armSide = rig.swingSide > 0 ? 'L' : 'R';     // side +1 = left of the bike (-X)
   const swinging = rig.swingT < SWING_T;
+  const kicking = swinging && wk === 'kick' && !!a.leg; // a kick swings the leg; both hands stay on the bars
   let peak = 0;
   if (swinging) rig.swingT += dt;
   const p = Math.min(rig.swingT / SWING_T, 1);
   for (const s of ['L', 'R']) {
     const A = a.arm[s];
-    if (swinging && s === armSide) {
+    if (swinging && s === armSide && !kicking) {
       let ang;
       if (p < 0.25) ang = -0.35 * ss(p / 0.25); else if (p < 0.55) ang = -0.35 + 1.75 * ss((p - 0.25) / 0.3); else ang = 1.4 * (1 - ss((p - 0.55) / 0.45));
       peak = Math.sin(Math.PI * clamp((p - 0.15) / 0.7, 0, 1));
@@ -597,10 +598,18 @@ function poseRig(rig, b, info, dt, lodWant) {
       solveArm(rig, s, _t, s === 'L' ? -0.6 : 0.6);
     } else restArm(rig, s);
   }
+  if (kicking) {
+    // the leg on the attacking side leaves the peg and stamps out sideways (peak at the moment the kick lands), then returns
+    peak = Math.sin(Math.PI * clamp((p - 0.15) / 0.7, 0, 1));
+    const Lg = a.leg[armSide], out = armSide === 'L' ? -1 : 1, reach = (Lg.l1 + Lg.l2) * 0.97;
+    _t.copy(Lg.A);
+    _t.x += out * reach * 0.8 * peak; _t.y += 0.22 * peak; _t.z -= 0.1 * peak;
+    solveLeg(rig, armSide, _t, 0.25 * peak + 0.1);
+  }
   // head: looks into the corner, turns toward a strike
   by.head.rotation.set(0, clamp(rig.dLean * 0.45, -0.5, 0.5) * 0.8 + (swinging ? rig.swingSide * 0.55 * peak : 0), -(rig.dLean + tRoll) * 0.85);
   // weapon in the swinging hand
-  if (swinging) {
+  if (swinging && !kicking) {
     const wg = weaponGeos && (weaponGeos[wk] || weaponGeos.fist);
     if (wg) {
       let w = rig.weapons[wk];
@@ -671,6 +680,7 @@ export function createRiders(scene, shadow) {
     shadow.set(slot, vis ? px : 0, py, pz, b.yaw, vis ? 1 : 0);
     if (!vis) return;
     s.root.position.set(px, py, pz);
+    if (s.root.scale.x !== MODEL_SCALE) s.root.scale.setScalar(MODEL_SCALE);
     const dx = px - camPos.x, dz = pz - camPos.z, d2 = dx * dx + dz * dz;
     // behind the camera (and not the player): hidden, no animation work
     if (slot !== 0 && camDir && (dx * camDir.x + dz * camDir.z) < -2.5 && d2 > 36) { rig.root.visible = false; return; }
