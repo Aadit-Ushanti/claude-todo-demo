@@ -11,7 +11,7 @@
 //                                     also gets rider.hitFx = {t, side, weapon, strength}, a visual-only predicted stagger)
 //   {type:'blow', from, to, damage}   a swing that landed on a rider simulated here (already applied)
 //   {type:'carhit', id, slot}         a rider hit a traffic car
-import { DT, createBike, stepBike, meleeHit, applyHit, contactShare, swingCooldown, WEAPONS, SPEED_SCALE, ROAD_ASSIST } from '../physics/BikePhysics.js';
+import { DT, createBike, stepBike, meleeHit, applyHit, contactShare, swingCooldown, WEAPONS, RIVAL_REACH, SPEED_SCALE, ROAD_ASSIST } from '../physics/BikePhysics.js';
 import { crashSeverity, createDestruction, spawnRagdoll, spawnDebris, stepDestruction } from '../physics/DestructionSystem.js';
 import { createTraffic, stepTraffic } from './Traffic.js';
 import { createBrain, rivalInput } from '../ai/RivalAI.js';
@@ -194,7 +194,7 @@ function remount(race, r, ahead = 0) {
   b.pos.x = m.x + m.hz * dEdge; b.pos.z = m.z - m.hx * dEdge; b.pos.y = tr.heightAt(b.pos.x, b.pos.z); b.offBal = 0;
   b.vel.x = 0; b.vel.y = 0; b.vel.z = 0; b.speed = 0; b.yaw = m.yaw; b.yawRate = 0; b.yawKick = 0;
   b.lean = 0; b.leanRate = 0; b.pitch = 0; b.slip = 0; b.drifting = false; b.latVel = 0; b.stagger = 0;
-  b.airborne = false; b.crashed = false; b.wInit = false; b.accel = 0;
+  b.airborne = false; b.crashed = false; b.wInit = false; b.accel = 0; b.rebound = 1; b.reboundV = 0.9 * b.spec.topSpeed;
   b.health = Math.max(b.health, 0.55 * b.spec.health);
   r.crashT = 0; r.wasCrashed = false; r.ghost = GHOST_T; r.swing.active = false; r.swing.cd = 0.5;
   pushEvent(race, { type: 'remount', slot: r.slot });
@@ -236,7 +236,7 @@ function swingAt(race, r, side, forgiving) {
     if (v === r || v.bike.crashed) continue;
     const dx = v.bike.pos.x - att.pos.x, dz = v.bike.pos.z - att.pos.z;
     if (dx * dx + dz * dz > 25) continue;
-    const h = meleeHit(att, v.bike, sw.weapon, side, forgiving);
+    const h = meleeHit(att, v.bike, sw.weapon, side, forgiving || (r.brain && v.kind !== 'ai' ? RIVAL_REACH : false)); // (a rival swings at a human with a longer reach, on its own arc: a rider that has moved aside is still within it)
     if (!h) continue;
     if (r.kind === 'ai' && v.kind === 'ai') { // rivals pull their punches against each other so the field does not wreck itself
       h.damage *= 0.5; h.stagger *= 0.5; h.impulse.x *= 0.35; h.impulse.y *= 0.35; h.impulse.z *= 0.35;
@@ -270,8 +270,9 @@ function stepSwing(race, r, dt) {
   } else {
     sw.t += dt;
     const w = WEAPONS[sw.weapon];
-    if (!sw.resolved && sw.t >= w.windup) { sw.resolved = true; if (!r.bike.crashed) resolveSwing(race, r); }
-    if (sw.t >= w.windup + 0.2) { sw.active = false; sw.cd = swingCooldown(r.bike.spec, sw.weapon); }
+    const wu = w.windup * r.bike.spec.windupMul;
+    if (!sw.resolved && sw.t >= wu) { sw.resolved = true; if (!r.bike.crashed) resolveSwing(race, r); }
+    if (sw.t >= wu + 0.2) { sw.active = false; sw.cd = swingCooldown(r.bike.spec, sw.weapon); }
   }
   inp.attack = sw.active ? sw.weapon : null;
   inp.attackSide = sw.side;
@@ -739,7 +740,7 @@ export function stepRace(race, dt, localInputs) {
     const dwant = racing && race.draft !== false ? draftWanted(race, r) : 0;
     const dcur = b.draft > 0 ? b.draft : 0;
     b.draft = dcur + clampC(dwant - dcur, -dt / DRAFT_EASE, dt / DRAFT_EASE);
-    b.boost = pb * (1 + DRAFT_GAIN * b.draft);
+    b.boost = pb * (1 + DRAFT_GAIN * b.spec.draftMul * b.draft);
     stepBike(b, si, dt, track);
     if (r.ghost > 0) r.ghost -= dt;
     if (b.offBal > 0) b.offBal -= dt;

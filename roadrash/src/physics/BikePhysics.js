@@ -20,6 +20,10 @@ const K_LATVEL = 60 * Math.log(1 + 3 / 60); // lateral kick decay (was / (1 + 3 
 const VERT_DT = 1 / 120;
 
 const G = 9.81;
+/** Time constant (s) of the pick-up push after a blow or a wipeout (see spec.rebound). */
+export const REBOUND_T = 2.5;
+/** The pick-up push works while the bike is more than this share of its top speed below the speed it had (a wipeout, a real loss; the 0.4 m/s of a punch is not). */
+export const REBOUND_GAP = 0.06;
 /**
  * Real speeds are 30 % below the previous tuning (183.3 / 187.2 / 178.6 km/h became 128.3 / 131.0 / 125.0): the game is the same race at a
  * lower real speed. Every speed in this model (bike tops, the knees of the lean ceiling, drift gates, wobble, crash thresholds, traffic, the
@@ -91,6 +95,14 @@ export function makeSpec(id, name, o) {
     staggerMul: o.staggerMul ?? 1, // stagger time per blow, relative
     knock: o.knock ?? 1, // knock-off threshold per blow, relative
     tempo: o.tempo ?? 1, // length of the whole swing cycle (windup, swing, recovery) relative to the weapon's: > 1 = slower swinging (heavy bikes)
+    // Character traits of a blow's aftermath and of the road (1 = the reference): see applyHit, stepBike and Race.js
+    windupMul: o.windupMul ?? 1, // wind-up of every swing relative to the weapon's (< 1 = the blow lands sooner)
+    shoveMul: o.shoveMul ?? 1, // sideways shove of a wheel kick on this bike relative to the reference: the lighter the bike, the further it is pushed (a punch is impulse / mass already)
+    balMul: o.balMul ?? 1, // how long the rider stays off balance after a blow, relative (the wipeout window of 'shoved')
+    settle: o.settle ?? 1, // how quickly the yaw kick of a blow dies away (steer-back: the nose is straight again): higher = sooner
+    rebound: o.rebound ?? 1, // extra push (x thrust) after a blow or a wipeout while the speed it had before is not back yet, fading in a couple of seconds: how fast the bike is back up to speed
+    yawResp: o.yawResp ?? 1, // how quickly the heading follows the lean (the bars bite): higher = quicker lane changes
+    draftMul: o.draftMul ?? 1, // slipstream gain relative to DRAFT_GAIN (Race.js)
     tag: o.tag || name, // short label for UI
   };
 }
@@ -103,33 +115,37 @@ export function makeSpec(id, name, o) {
  * the old one scaled by K: 0 to top takes as many seconds as before, and a share of top speed is reached in the same time).
  * (health / staggerMul / tempo of the three were re-balanced a little when the speeds were cut and the swing reach widened: the duels of
  * tests/balance.test.js are decided by the health shares, so they are sensitive to tenths of a health point.)
- * Bike specifications: three trade-offs of equal overall strength (see tests/balance.test.js and tests/tools/balance-report.mjs).
- *  Sport   : highest top speed and the best high-speed lean authority; weakest launch, lightest (biggest kick when hit), least health and stagger resistance, quickest swing cycle.
- *  Street  : best acceleration, grip and lean rate, quickest direction changes; middling top speed; average toughness.
- *  Cruiser : ('chopper' id) heaviest, most health, stagger resistance and stability when struck, the shoves hardest in body contact;
- *            slowest to lean, lowest cornering speed, slowest swing cycle; lowest top speed; good mid-range torque.
+ * Bike specifications: three trade-offs of equal overall strength (see tests/balance.test.js, tests/traits.test.js and tests/tools/balance-report.mjs).
+ *  Sport   : lightest, so a blow pushes it furthest (impulse / mass, and a wheel kick: shoveMul), and the least health; BUT it recovers fastest: the shortest off-balance time after a hit (balMul),
+ *            the quickest steer-back (settle), the best pick-up back to speed after a blow or a wipeout (rebound) and the strongest slipstream (draftMul). Highest top speed, weakest launch.
+ *  Street  : the quickest lane change (lean rate / lean acceleration / yaw response) and the fastest attack (shortest wind-up: windupMul; the swing cycle itself stays its tempo); middle weight.
+ *  Cruiser : ('chopper' id) heaviest, so hardest to shove or knock off, and the most health; hits hardest in body contact; BUT the slowest lane change and the slowest swing cycle; lowest top speed.
+ * The duels of balance.test.js (36-64 %) are decided by the health shares and the swing timing, so health / staggerMul / knock / tempo / windupMul were tuned together with the traits.
  * Fields: mass, power, topSpeed, drag (N/(m/s)^2), crr, wheelbase, brake (m/s^2), grip (mu), maxLean, leanRate, leanAccel,
  * tractionFrac (launch acceleration = tractionFrac * grip * g, until power takes over), suspFreq, suspDamp, travel,
- * hsLeanLoss, health, staggerMul, knock, tempo.
+ * hsLeanLoss, health, staggerMul, knock, tempo, and the characters windupMul, shoveMul, balMul, settle, rebound, draftMul, yawResp (see makeSpec).
  */
 export const BIKE_SPECS = {
   street: makeSpec('street', 'Street', {
     mass: 295, power: 59260 * K * K, topKmh: 183.3 * K, crr: 0.015 * K, wheelbase: 1.45, brake: 9.5 * K, grip: 1.25,
-    maxLean: 0.785, leanRate: 3.686, leanAccel: 36, tractionFrac: 0.5056065239551478 * K,
+    maxLean: 0.8, leanRate: 4.6, leanAccel: 56, tractionFrac: 0.5056065239551478 * K,
     suspFreq: 2.2, suspDamp: 0.5, travel: 0.14,
-    hsLeanLoss: 0.31, health: 100.6, staggerMul: 1, knock: 1, tempo: 1.06, tag: 'ST',
+    hsLeanLoss: 0.31, health: 95.7829, staggerMul: 0.9863, knock: 1.0017, tempo: 1.1, tag: 'ST',
+    windupMul: 0.9397, yawResp: 2.5,
   }),
   sport: makeSpec('sport', 'Sport', {
     mass: 255.923, power: 76300 * K * K, topKmh: 184.2 * K, crr: 0.014 * K, wheelbase: 1.4, brake: 10.5 * K, grip: 1.22,
     maxLean: 0.795, leanRate: 3.3, leanAccel: 28, tractionFrac: 0.52 * K,
     suspFreq: 2.6, suspDamp: 0.55, travel: 0.12,
-    hsLeanLoss: 0.305, health: 99.65, staggerMul: 1.1385, knock: 1.149, tempo: 0.924, tag: 'SP',
+    hsLeanLoss: 0.305, health: 90.9495, staggerMul: 1.0266, knock: 1.0432, tempo: 0.949, tag: 'SP',
+    shoveMul: 1.1, balMul: 0.93, settle: 1.3564, rebound: 1.12, draftMul: 1.2,
   }),
   chopper: makeSpec('chopper', 'Cruiser', {
     mass: 379.001, power: 71058 * K * K, topKmh: 182.8 * K, crr: 0.018 * K, wheelbase: 1.95, brake: 9 * K, grip: 1.15,
     maxLean: 0.78, leanRate: 2.6, leanAccel: 22, tractionFrac: 0.5413 * K,
     suspFreq: 1.7, suspDamp: 0.45, travel: 0.16,
-    hsLeanLoss: 0.27, health: 100.8, staggerMul: 0.945, knock: 1.081, tempo: 1.128, tag: 'CR',
+    hsLeanLoss: 0.27, health: 101.1377, staggerMul: 0.9785, knock: 1.2064, tempo: 1.204, tag: 'CR',
+    shoveMul: 0.93,
   }),
 };
 
@@ -141,6 +157,8 @@ export const BIKE_SPECS = {
  */
 /** Wheel zones for the kick, along the victim's length from its centre (m): centres at +-at, half-length half. */
 export const KICK_WHEEL = { at: 0.7, half: 0.3 };
+/** The share of the way from the rivals' tight reach to the human's reach that a rival swings with at a human (a rider that has just moved aside is still within it). */
+export const RIVAL_REACH = 0.5;
 export const WEAPONS = {
   punch: { reach: 1.1, reach0: 0.85, damage: 5, arc: 1.25, arc0: 0.9, windup: 0.12, impulse: 140, stagger: 0.35 },
   // The kick reaches further and is slower than the punch. Landed on the body it does exactly what a punch does; landed on a
@@ -276,6 +294,7 @@ export function stepBike(bike, input, dt, track) {
     b.stagger = Math.max(0, b.stagger - dt);
   }
   if (b.crashed) { thr = 0; brk = 0; st = 0; }
+  if (b.rebound > 0) { b.rebound *= Math.exp(-dt / REBOUND_T); if (b.rebound < 1e-3) b.rebound = 0; }
   b.throttle = thr; b.brake = brk; b.steer = st;
 
   const air = b.airborne;
@@ -289,7 +308,7 @@ export function stepBike(bike, input, dt, track) {
   const bst = b.boost > 0 ? b.boost : 1;
   let a = 0;
   if (!air) {
-    if (thr > 0) a += bst * thr * Math.min(s.power / Math.max(v, 3 * K), s.tractionFrac * mu * m * G) / m;
+    if (thr > 0) a += bst * thr * Math.min(s.power / Math.max(v, 3 * K), s.tractionFrac * mu * m * G) / m * (v < b.reboundV - REBOUND_GAP * s.topSpeed ? 1 + (s.rebound - 1) * (b.rebound || 0) : 1);
     a -= G_LONG * Math.sin(b.groundPitch); // slope
   }
   const av = Math.abs(v);
@@ -363,9 +382,9 @@ export function stepBike(bike, input, dt, track) {
   if (b.assist > 0 && !air) cmd += b.assist * (b.roadCurve || 0) * v; // the road carries an assisted bike round most of the bend
   if (b.crashed) cmd = b.yawKick;
   if (air) cmd *= 0.3;
-  b.yawRate += (cmd - b.yawRate) * (1 - Math.exp(-K_YAW * dt));
+  b.yawRate += (cmd - b.yawRate) * (1 - Math.exp(-K_YAW * s.yawResp * dt));
   b.yaw = wrapAngle(b.yaw + b.yawRate * dt);
-  b.yawKick *= Math.exp(-K_YAWKICK * dt);
+  b.yawKick *= Math.exp(-K_YAWKICK * s.settle * dt);
   b.latVel *= Math.exp(-K_LATVEL * dt);
   if (Math.abs(b.latVel) < 1e-4) b.latVel = 0;
 
@@ -522,7 +541,8 @@ const RIDER_H1 = 1.8;
  * @param {object} victim BikeState
  * @param {string} weaponId key of WEAPONS
  * @param {number} side -1 swing right, +1 swing left
- * @param {boolean} [forgiving=true] false: the old reach and arc (reach0 / arc0), as the AI riders judge a swing
+ * @param {boolean|number} [forgiving=true] false: the old reach and arc (reach0 / arc0), as the AI riders judge a swing; a number 0..1: the reach stretched that share of the way to the human's (reach) on the old arc (arc0),
+ *   which is how a rival swings at a human (RIVAL_REACH)
  * @returns {null|{damage:number,impulse:{x:number,y:number,z:number},stagger:number,relSpeed:number,point:{x:number,y:number,z:number}}}
  */
 export function meleeHit(attacker, victim, weaponId, side, forgiving = true) {
@@ -543,8 +563,8 @@ export function meleeHit(attacker, victim, weaponId, side, forgiving = true) {
   const vy = victim.yaw, vc = Math.cos(vy);
   const vlx = -vc, vlz = Math.sin(vy);
   const vsl = Math.sin(victim.lean), vcl = Math.cos(victim.lean);
-  const cosArc = Math.cos(forgiving ? w.arc : w.arc0);
-  const reach = forgiving ? w.reach : w.reach0;
+  const cosArc = Math.cos(forgiving === true ? w.arc : w.arc0); // (forgiving a number: the arc stays the AI's tighter one, only the reach is stretched)
+  const reach = forgiving === true ? w.reach : forgiving ? w.reach0 + (w.reach - w.reach0) * forgiving : w.reach0;
   let best = Infinity, bpx = 0, bpy = 0, bpz = 0;
   const N = 6;
   for (let i = 0; i <= N; i++) {
@@ -625,14 +645,15 @@ export function applyHit(victim, hit) {
   v.health = Math.max(0, v.health - hit.damage);
   v.stagger = Math.max(v.stagger, hit.stagger * v.spec.staggerMul);
   // off balance for a while after any blow (longer after a wheel kick): Race.js wipes out an off-balance rider who leaves the tarmac
-  v.offBal = Math.max(v.offBal || 0, hit.shove ? OFF_BALANCE_KICK : OFF_BALANCE_PUNCH);
+  v.offBal = Math.max(v.offBal || 0, (hit.shove ? OFF_BALANCE_KICK : OFF_BALANCE_PUNCH) * v.spec.balMul);
+  { const keep = v.rebound > 0.05 && v.reboundV > v.speed ? v.reboundV : 0; v.rebound = 1; v.reboundV = Math.max(keep, v.speed); } // the pick-up push of a bike that has been hit (spec.rebound): it works until the speed it had is (nearly) back
   const c = Math.cos(v.yaw), s = Math.sin(v.yaw);
   if (hit.shove) {
     // a kick on a wheel: the bike is shoved sideways, away from the attacker, and its nose is turned a little the same way.
     // A steadier bike (staggerMul < 1) is shoved less. The kick never knocks the rider off by itself: the traffic, the
     // wall or the roadside do that.
     const sL = hit.shove.x * -c + hit.shove.z * s; // along left, m/s (the same for every bike: the heavier bikes already wobble for a shorter time)
-    v.latVel += sL;
+    v.latVel += sL * v.spec.shoveMul;
     v.yawKick += sL * KICK_YAW;
     if (v.health <= 0) v.crashed = true;
     return;
@@ -717,12 +738,12 @@ export function statCard(spec) {
 
 /**
  * Seconds a rider must wait after a swing of `weaponId` before the next one (the weapon's own 0.25 s, stretched so that the whole cycle
- * windup + swing + recovery is `spec.tempo` times the weapon's).
+ * windup + swing + recovery is `spec.tempo` times the weapon's; a bike with a shorter wind-up (spec.windupMul) lands its blow sooner but recovers for as much longer).
  * @param {object} spec a BIKE_SPECS entry
  * @param {string} weaponId key of WEAPONS
  * @returns {number} seconds
  */
 export function swingCooldown(spec, weaponId) {
   const w = WEAPONS[weaponId] || WEAPONS.punch;
-  return Math.max(0, 0.25 + (w.windup + 0.45) * (spec.tempo - 1));
+  return Math.max(0, 0.25 + (w.windup + 0.45) * (spec.tempo - 1) + w.windup * (1 - spec.windupMul)); // (a shorter wind-up moves time from the front of the cycle to its end: the whole cycle stays tempo x the weapon's)
 }

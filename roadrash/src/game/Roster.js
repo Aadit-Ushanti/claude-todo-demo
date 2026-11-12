@@ -96,9 +96,9 @@ export const DEFAULT_BIKE = 'street';
 
 /** Menu texts and the short tag of each type (the stat bars come from BikePhysics.statCard). */
 export const BIKE_INFO = {
-  sport: { id: 'sport', name: 'Sport', tag: 'SP', blurb: 'Fastest on the straights and in fast bends. Light and twitchy: slow off the line, and it takes the biggest kick when hit.' },
-  street: { id: 'street', name: 'Street', tag: 'ST', blurb: 'The all-rounder: best acceleration and grip, quickest to change direction. Middling top speed, average toughness.' },
-  chopper: { id: 'chopper', name: 'Cruiser', tag: 'CR', blurb: 'Heavy and tough: shrugs off blows and shoves lighter bikes aside. Slow to lean, but strong mid-range torque.' },
+  sport: { id: 'sport', name: 'Sport', tag: 'SP', blurb: 'Lightest: a blow pushes it furthest, but it steadies itself, gets back up to speed and gains from a slipstream faster than the others.' },
+  street: { id: 'street', name: 'Street', tag: 'ST', blurb: 'Quickest to change lanes and to land a blow. Middle weight, average toughness.' },
+  chopper: { id: 'chopper', name: 'Cruiser', tag: 'CR', blurb: 'Heaviest and toughest: hardest to shove or knock off, and it hits hardest. Slowest to change lanes and to swing.' },
 };
 
 /**
