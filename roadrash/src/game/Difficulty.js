@@ -26,7 +26,11 @@ export const DEFAULT_DIFFICULTY = 'medium';
  *  take        share of the openings (rider in reach, swing ready) it takes, times 0.55..1.45 of its aggression (clamped to 1)
  *  sight       0..1 how well it weighs the surroundings: 0 picks a plain option, 1 prefers a wheel kick that shoves the rider off the tarmac or into a car
  *  backOut     health share under which a rival stops fighting (holds fire)
- *  defend      0..1 how strongly a rider blocks the line of a human right behind it
+ *  defend      0..1 how strongly a rider covers the line of a rider (human or rival) coming up behind it
+ *  cover       lateral slew (m/s) of the target line while a rival covers the line of a chaser behind it (it follows the chaser's sideways move)
+ *  squeeze     0..1 how tightly it shares the road with a rider level with it (0: gives the full 1.25 m side clearance, 1: only 0.7 m: it keeps its own line and the other rider has to give way or fight) and how readily a rider that has moved aside releases the rival behind it
+ *  shoulderWait  seconds held up behind a blocker, with no gap on the road and no safe oncoming-lane pass, before a rival takes the shoulder for a short pass
+ *  hold        0..1 how well a rival that has drawn level with another rider stays level (it stretches to the other's speed by up to hold x 6 % of its top speed, and does not pull away by more than the slipstream's edge)
  *  match       share (0..1) of the speed difference to a human within 50 m that a rival closes (see RivalAI, pack behaviour)
  *  rbRange     rubber band: distance (m) ahead of / behind the best human at which the band is at full strength
  *  rbAhead     rubber band: slow-down at rbRange (or more) ahead of the best human, as a share of speed
@@ -40,15 +44,15 @@ export const DEFAULT_DIFFICULTY = 'medium';
 export const DIFFICULTY = {
   easy: {
     id: 'easy', label: 'Easy', pace: 0.8, paceSpread: 0.02, corner: 0.74, brake: 0.82, clearK: 1.3, clearM: 30, pullK: 1.25, laneCost: 1.4, wobble: 1.8, laneRate: 2.4,
-    swingStart: 12, swingCd: 2, swingP: 0.4, react: 0.7, take: 0.25, sight: 0, backOut: 0.5, defend: 0, match: 0.97, rbRange: 120, rbAhead: 0.32, rbBehind: 0.1, aiBoost: 0.03, strag: 0.05, mistakeEvery: 24, weapon: [0.78, 0.96],
+    swingStart: 12, swingCd: 2, swingP: 0.4, react: 0.7, take: 0.25, sight: 0, backOut: 0.5, defend: 0, cover: 2.4, squeeze: 0, shoulderWait: 7, hold: 0, match: 0.97, rbRange: 120, rbAhead: 0.32, rbBehind: 0.1, aiBoost: 0.03, strag: 0.05, mistakeEvery: 24, weapon: [0.78, 0.96],
   },
   medium: {
     id: 'medium', label: 'Medium', pace: 0.905, paceSpread: 0.02, corner: 0.87, brake: 0.92, clearK: 1, clearM: 16, pullK: 0.95, laneCost: 1, wobble: 0.6, laneRate: 3.7,
-    swingStart: 6, swingCd: 1, swingP: 1, react: 0.3, take: 0.6, sight: 0.6, backOut: 0.3, defend: 0.25, match: 0.97, rbRange: 60, rbAhead: 0.28, rbBehind: 0.24, aiBoost: 0.13, strag: 0.08, mistakeEvery: 0, weapon: [0.45, 0.78],
+    swingStart: 6, swingCd: 1, swingP: 1, react: 0.3, take: 0.6, sight: 0.6, backOut: 0.3, defend: 0.55, cover: 5, squeeze: 0.5, shoulderWait: 3, hold: 0.7, match: 0.97, rbRange: 60, rbAhead: 0.28, rbBehind: 0.24, aiBoost: 0.13, strag: 0.08, mistakeEvery: 0, weapon: [0.45, 0.78],
   },
   hard: {
-    id: 'hard', label: 'Hard', pace: 0.955, paceSpread: 0.015, corner: 1.05, brake: 1.03, clearK: 0.9, clearM: 10, pullK: 0.9, laneCost: 0.6, wobble: 0.4, laneRate: 3.8,
-    swingStart: 3, swingCd: 0.5, swingP: 1.7, react: 0.05, take: 1, sight: 1, backOut: 0.12, defend: 0.8, match: 0.95, rbRange: 60, rbAhead: 0.2, rbBehind: 0.28, aiBoost: 0.16, strag: 0.1, mistakeEvery: 0, weapon: [0.2, 0.55],
+    id: 'hard', label: 'Hard', pace: 0.95, paceSpread: 0.01, corner: 1.05, brake: 1.03, clearK: 0.9, clearM: 10, pullK: 0.9, laneCost: 0.6, wobble: 0.4, laneRate: 3.8,
+    swingStart: 3, swingCd: 0.5, swingP: 1.7, react: 0.05, take: 1, sight: 1, backOut: 0.12, defend: 1, cover: 8, squeeze: 1, shoulderWait: 1.8, hold: 1, match: 0.95, rbRange: 45, rbAhead: 0.2, rbBehind: 0.28, aiBoost: 0.16, strag: 0.1, mistakeEvery: 0, weapon: [0.2, 0.55],
   },
 };
 

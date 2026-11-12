@@ -186,7 +186,7 @@ export function patchMasked(mat, paint = 0xffffff, suit = 0xffffff, helm = 0xfff
  * keep their sizes. `?ms=1.05` in the page address overrides it (used for the size comparison shots).
  */
 export const MODEL_SCALE = (() => {
-  let v = 1;
+  let v = 1.1;
   try { const q = parseFloat(new URLSearchParams(globalThis.location ? globalThis.location.search : '').get('ms')); if (q > 0.5 && q < 2) v = q; } catch { /* not in a page */ }
   return v;
 })();
