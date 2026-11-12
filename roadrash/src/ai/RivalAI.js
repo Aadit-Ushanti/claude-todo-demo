@@ -1,5 +1,6 @@
 // AI rival riders: pure logic, no DOM or three.js. One brain per rival; rivalInput fills the same input object stepBike expects.
-// The AI rides in track coordinates: it steers toward a target lateral offset d (keeping right of the centre line),
+// The AI rides in track coordinates: it steers toward a target lateral offset d. The whole tarmac, the oncoming half included, is its racing surface: its line is a live scored choice
+// (chooseLine: free road ahead, slipstream, the inside of the next bend, the home line only as a tie-breaker) while no oncoming car is inside its window (`roam`); it is back on its own side when one comes into sight,
 // feeds forward the lean for the curve ahead, brakes for corners with v^2 <= a_lat/|curve| looked up along the road,
 // overtakes slower bikes/cars when the oncoming lane is clear, and swings at neighbours.
 // The passing line is a live choice (no held-up timer): a blocked rival scores the oncoming lane (preferred when safe), a gap on the tarmac, the shoulder (its speed penalty plus a risk) and waiting
@@ -46,13 +47,13 @@ export function createBrain(slot, seed = 0, difficulty = 'medium') {
   return {
     ...p, share, weaponAI, id: slot, rand: r, diff, level, mrand: mr,
     mT: diff.mistakeEvery > 0 ? diff.mistakeEvery * (0.4 + 0.8 * mr()) : 1e9, mLeft: 0, mKind: 0,
-    wobPhase: r() * 6.28, tgtD: p.laneD, side: 1, attackT: 1 + 2 * r(), commitT: 0, stuckT: 0, done: false,
+    wobPhase: r() * 6.28, tgtD: NaN, lineD: NaN, lineS: NaN, lineT: 0, side: 1, attackT: 1 + 2 * r(), commitT: 0, stuckT: 0, done: false,
     vErr: 0, cap: 0, matchT: 0, farT: 9,
     hp: -1, waitT: 0, rollT: 0, retalT: 0, openT: 0, openTake: false, chaseT: 0, backing: false, tracked: null, trackSwung: false,
     level: false, chBike: null, chD: 0, chVd: 0, covering: false, shT: 0,
     decT: diff.react, laneSeen: false, wantSh: false, laneOn: false, laneOffT: 9, // the live choice of the passing line (see the obstacle block)
     mateB: null, mateD: 0, mateVd: 0, mateT: 0, mateEv: 0, pressing: false, pressWas: false, pressOn: false, // the rider alongside and its sideways move (pressing)
-    st: { pass: 0, contest: 0, punch: 0, kick: 0, wheel: 0, wheelHazard: 0, block: 0, shoulder: 0, lane: 0, press: 0, backOut: 0, holdFire: 0 }, // counters of the moves chosen (reports)
+    st: { pass: 0, contest: 0, punch: 0, kick: 0, wheel: 0, wheelHazard: 0, block: 0, shoulder: 0, lane: 0, roam: 0, press: 0, backOut: 0, holdFire: 0 }, // counters of the moves chosen (reports)
   };
 }
 
@@ -95,13 +96,14 @@ const PASS_ACC = 3; // m/s^2 a rider may count on while pulling past (it is near
  * @param {number} closing speed difference to it (m/s, may be <= 0)
  * @param {number} olen its length (m)
  * @param {boolean} out true if the rider is already out in the oncoming lane (no swing-out time to add)
+ * @param {number} [wide] extra width of the time window (the roaming test uses it: a poor judge wants a longer one)
  */
-function laneClear(gap, closing, olen, out) {
+function laneClear(gap, closing, olen, out, wide = 1) {
   const cars = _ctx.cars;
   if (!cars) return true;
   const need = (gap > 0 ? gap : 0) + olen + 9;
   const c0 = closing > 0 ? closing : 0;
-  const T = ((-c0 + Math.sqrt(c0 * c0 + 2 * PASS_ACC * need)) / PASS_ACC * 1.3 + (out ? 0.3 : 1.0)) * _brain.diff.clearK; // (x 1.3 + 0.3 s: the real pass is slower than the ideal one: the throttle is held while swinging out, the car may be a van)
+  const T = ((-c0 + Math.sqrt(c0 * c0 + 2 * PASS_ACC * need)) / PASS_ACC * 1.3 + (out ? 0.3 : 1.0)) * _brain.diff.clearK * wide; // (x 1.3 + 0.3 s: the real pass is slower than the ideal one: the throttle is held while swinging out, the car may be a van)
   const safe = _brain.diff.clearM;
   for (let i = 0; i < cars.length; i++) {
     const c = cars[i];
@@ -133,6 +135,18 @@ function laneClearAt(tau, vf, gap, olen) {
   return true;
 }
 
+// The racing line (see chooseLine): costs in seconds-equivalent per candidate line; the home line is only a tie-breaker
+const ROAM_HOME_W = 0.01; // s per m^2 away from the rival's own home line
+const ROAM_STICK = 0.004; // s per m^2 away from the line it has now (no flicker)
+const ROAM_SIDE = 0.03; // s: staying on the half of the road it is on
+const ROAM_PRICE = 0.05; // s x the level's laneCost squared: what the oncoming half costs on top (nothing is gained there unless the road is better: the home line, a bend, a draft)
+const ROAM_BEND_W = 3; // weight of the inside of the next bend (metres of path saved / speed)
+const ROAM_DRAFT_W = 6; // s over which the slipstream's 3 % pays
+const ROAM_BLOCK_W = 2.5; // s: what a line blocked by something slow ahead costs (times its speed deficit, fading with how far off it still is)
+const ROAM_HOLD_T = 6; // s: a slower vehicle this close in time ahead is one we would have to pass (or follow) before the oncoming half is ours
+const ROAM_DRIFT = 2; // m/s: how fast the line it has chosen moves its preferred position (a bend's inside is not worth a hard swerve; getting out of the oncoming half is)
+const ROAM_SIGHT_K = 0.4; // how much wider than a pass window the oncoming window is for a rider that does not see well (1 - sight)
+
 const WAIT_HORIZON = 8; // s: the longest wait the rider can imagine for the oncoming lane to open (beyond it, 'not in sight')
 const SHOULDER_RISK = 1.6; // s-equivalent: the cost of a pass off the tarmac besides its speed penalty (little room, no way back across the blocker's tail)
 
@@ -160,14 +174,59 @@ function wantShoulder(bi, pace, rough) {
 }
 
 /**
+ * The racing line: scored from the whole tarmac on every think tick (the level's `react`), the oncoming half included while it is clear (`roam`: no oncoming car inside the
+ * rival's window, laneClear with the level's clearK / clearM and a wider window for a poor `sight`). A line costs: the pull of the rival's home line (a tie-breaker only), a
+ * little for staying where it is, the level's price for the oncoming half (laneCost), a line blocked by something slower ahead (its speed deficit, fading with how far off it is),
+ * and gains: the slipstream of a rider ahead that is not slower, and the inside of the next bend (the path it saves).
+ * @returns {number} the lateral offset of the line
+ */
+function chooseLine(brain, spec, roam, minD, maxD, pace) {
+  const v = _v, price = ROAM_PRICE * brain.diff.laneCost * brain.diff.laneCost;
+  const cv = _ctx.track.edges.curve, nE = _ctx.track.edges.n;
+  const L = clamp(v * 3, 60, 200);
+  let S = 0; // heading change over the road ahead (signed: positive = the inside is the positive-d side, as in the corner scan)
+  for (let x = 10; x <= L; x += 10) { let ix = ((_s + x) * 0.5) | 0; if (ix > nE - 1) ix = nE - 1; S += cv[ix] * 10 * (1 - x / (L + 10)); }
+  const kb = ROAM_BEND_W * (0.5 + 0.5 * brain.diff.sight) * S / Math.max(v, 10 * K); // (a poor judge sees less of the bend's inside)
+  const out = brain.lineD > LANE_D;
+  let best = NaN, bc = 1e18;
+  const hiLine = roam ? maxD : Math.min(maxD, -0.9), // (with the oncoming half closed the nearest own-side line is a car's width from the centre line, not on it)
+     home = clamp(brain.laneD, minD, hiLine);
+  const nGrid = Math.floor((hiLine - minD) / 0.35 + 1e-6) + 1;
+  for (let k = 0; k <= nGrid; k++) { // (the grid of lines, and the home line itself)
+    const c = k < nGrid ? minD + 0.35 * k : home;
+    const lane = c > LANE_D;
+    let cost = ROAM_HOME_W * (c - brain.laneD) * (c - brain.laneD) + ROAM_STICK * (c - brain.lineD) * (c - brain.lineD) - kb * c;
+    if (lane) cost += price;
+    if (lane === out) cost -= ROAM_SIDE;
+    for (let i = 0; i < _nT; i++) {
+      if (T_VO[i] < 0) continue; // (an oncoming car: the window of `roam` has kept the oncoming half clear of it)
+      const dd = T_OD[i] > c ? T_OD[i] - c : c - T_OD[i], clr = T_CLR[i] + (T_BIKE[i] ? 0 : 0.25);
+      if (T_DS[i] <= 0) continue; // (a rider alongside: the road is shared tightly there, see the squeeze; it does not push a rival off its line)
+      if (dd < clr) {
+        const deficit = clamp(1 - T_VO[i] / Math.max(pace, 1), 0, 1), tR = T_GAP[i] / Math.max(v - T_VO[i], 2 * K);
+        cost += ROAM_BLOCK_W * deficit * (1 - sm01(tR / 8));
+      } else if (T_BIKE[i] && dd < 1.3 && T_VO[i] > v - 2 && T_DS[i] >= 2.5 && T_DS[i] <= 16) {
+        const fl = 1 - (T_DS[i] - 2.5) / 13.5, fw = 1 - dd / 1.3;
+        cost -= ROAM_DRAFT_W * 0.03 * spec.draftMul * fl * (2 - fl) * fw * (2 - fw);
+      }
+    }
+    if (cost < bc) { bc = cost; best = c; }
+  }
+  return best === best ? best : brain.lineD;
+}
+
+/**
  * Would moving from lateral offset d to the line c run through the band a same-direction car ahead occupies, with a gap that does not last for the sideways move
  * (at the closing speed v now, 1.8 m/s sideways, 8 m to spare)? Cutting across the front of a car we are overtaking is how riders end up on its bonnet.
  */
 function cutsLine(c, d, v) {
   for (let i = 0; i < _nT; i++) {
     if (T_DS[i] <= 0 || T_BIKE[i] || T_VO[i] < 0) continue;
-    const lo = T_OD[i] - T_CLR[i], hi = T_OD[i] + T_CLR[i];
-    if ((d < lo && c > hi) || (d > hi && c < lo)) { const cl = v > T_VO[i] ? v - T_VO[i] : 0; if (T_GAP[i] < cl * (c > d ? c - d : d - c) / 1.8 + 8) return true; }
+    const lo = T_OD[i] - T_CLR[i], hi = T_OD[i] + T_CLR[i], mid = T_OD[i];
+    const cl = v > T_VO[i] ? v - T_VO[i] : 0, run = cl * (c > d ? c - d : d - c) / 1.8;
+    if ((d < lo && c > hi) || (d > hi && c < lo)) { if (T_GAP[i] < run + 8) return true; }
+    // a rider inside the car's clearance band (at the edge of the road, say) that crosses its centre line also runs across its front while it is still closing on it (the smaller margin: following at its speed, a move across behind it is fine)
+    else if (cl > 2 && ((d < mid - 0.3 && c > mid + 0.3) || (d > mid + 0.3 && c < mid - 0.3)) && T_GAP[i] < run + 3) return true;
   }
   return false;
 }
@@ -227,72 +286,6 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
   const A = bike.assist > 0 ? bike.assist : 0; // the road assist this bike has (the same one the humans have): the road turns the bike for the rider
   const bst = bike.boost > 1 ? bike.boost : 1;
   const launch = (ctx.raceT || 0) < 6; // the grid launch: the bikes ahead are on their way too, they steer us round but never hold the throttle back (a touch is a shove)
-  _pref = brain.laneD + brain.wobble * Math.sin((ctx.raceT || 0) * 0.35 + brain.wobPhase);
-  // mistakes (easy): now and then brake too early for a moment, or run wide to the right-hand edge
-  let mistakeBrake = false;
-  if (diff.mistakeEvery > 0 && ctx.racing) {
-    brain.mT -= dt;
-    if (brain.mT <= 0) { brain.mKind = brain.mrand() < 0.5 ? 0 : 1; brain.mLeft = 1 + 1.2 * brain.mrand(); brain.mT = diff.mistakeEvery * (0.6 + 0.8 * brain.mrand()); }
-    if (brain.mLeft > 0) { brain.mLeft -= dt; if (brain.mKind === 0) mistakeBrake = true; else _pref = -(hw - 1.1); }
-  }
-  // who contests our position: the rider ahead in our line that we are not faster than by much (foe), a rider coming up behind in our line (chaser)
-  let foe = null, foeSc = 1e9, chaser = null, chaseSc = 1e9, mate = null, mateSc = 1e9;
-  const fast = (ob) => ob.speed > v - 1.5;
-  for (let i = 0; i < others.length; i++) {
-    const o = others[i], ob = o.bike;
-    if (ob === bike || ob.crashed || o.finished) continue;
-    const ds = o.s - s;
-    if (ds > 30 || ds < -30) continue;
-    const lat = o.d - d, al = lat < 0 ? -lat : lat;
-    if (ds < PRESS_AHEAD && ds > -PRESS_BACK && al > 0.3 && al < PRESS_REACH && o.d <= LANE_D && (ob.speed - v < 3 * K && ob.speed - v > -3 * K)) { const sc = al + 0.25 * (ds < 0 ? -ds : ds); if (sc < mateSc) { mateSc = sc; mate = o; } } // (alongside or a bike length or two off, at about our pace: the road is contested)
-    if (al > 2.8) continue;
-    if (ds > -1.2) { const sc = (ds < 1.2 ? -4 : ds) + 3 * al; if (sc < foeSc) { foeSc = sc; foe = o; } }
-    if (ds < -1.2 && ds > -26 && al < 3.2 && fast(ob)) { const sc = -ds + 3 * al; if (sc < chaseSc) { chaseSc = sc; chaser = o; } }
-  }
-  // covering: a rider coming up behind in our line is blocked, once we have reacted (never into the oncoming lane): we take the line the chaser is taking and
-  // follow its sideways move (where it will be in a moment, not where it was), at the level's cover rate; the level scales how much
-  brain.covering = false;
-  if (chaser && diff.defend > 0 && !brain.done) {
-    brain.chaseT += dt;
-    if (brain.chBike === chaser.bike) brain.chVd += ((chaser.d - brain.chD) / dt - brain.chVd) * 0.3; else brain.chVd = 0;
-    brain.chBike = chaser.bike; brain.chD = chaser.d;
-    if (brain.chaseT >= diff.react) {
-      const aim = chaser.d + clamp(brain.chVd, -4, 4) * COVER_LEAD;
-      _pref += (clamp(aim, minD, -0.7) - _pref) * diff.defend; brain.covering = true;
-      if (brain.chaseT - dt < diff.react) brain.st.block++;
-    }
-  } else { brain.chaseT = 0; brain.chBike = null; brain.chVd = 0; }
-  // pressing: the rider alongside moves away while it is still within reach of us: we follow it across (at the level's press share and rate) and swing sooner, so that moving aside
-  // does not get it out of the fight. Only while it is within reach (<= 2.8 m, level with us): once it is clearly gone the move stops (no pursuit). It costs the other rider no speed.
-  brain.pressing = false;
-  if (mate && diff.press > 0 && !brain.done && !(bike.offBal > 0)) {
-    const lat = mate.d - d, sg = lat > 0 ? 1 : -1;
-    if (brain.mateB === mate.bike) brain.mateVd += ((mate.d - brain.mateD) / dt - brain.mateVd) * 0.3; else { brain.mateVd = 0; brain.mateT = 0; brain.pressOn = false; brain.mateEv = 0; }
-    brain.mateB = mate.bike; brain.mateD = mate.d; brain.mateT += dt;
-    // it begins when the rider's sideways speed is away from us (a deliberate move, not the wobble of a line) and goes on until the rival has closed to about a bike's reach (1 m),
-    // the rider comes back toward us by itself, or it is out of the box (above). The rival then goes back to its own line: nothing here follows a rider that has settled elsewhere
-    const al = lat < 0 ? -lat : lat;
-    // a rider that keeps getting out of our way (its sideways moves are away from us, move after move) is evading us; one that moves about for its own reasons (a car, its line) is not
-    const away = brain.mateVd * sg;
-    if (away > 0.3 || away < -0.3) brain.mateEv += ((away > 0 ? 1 : -1) - brain.mateEv) * 0.04;
-    if (away > 0.5 && brain.mateEv > PRESS_EVADE) brain.pressOn = true; else if (brain.mateVd * sg < -0.5 || al <= PRESS_GAP + 0.15) brain.pressOn = false;
-    if (brain.pressOn && brain.mateT >= diff.react) {
-      if (!brain.pressWas) brain.st.press++;
-      brain.pressing = true;
-      const aim = mate.d - sg * PRESS_GAP + clamp(brain.mateVd, -4, 4) * 0.35;
-      _pref += (clamp(aim, minD, -0.7) - _pref) * diff.press;
-    }
-  } else { brain.mateB = null; brain.mateVd = 0; brain.mateT = 0; brain.pressOn = false; brain.mateEv = 0; }
-  brain.pressWas = brain.pressing;
-  // an episode of approaching a rider and passing it (clean: no blow thrown meanwhile; contested: there was a fight)
-  if (brain.tracked) {
-    let tr = null;
-    for (let i = 0; i < others.length; i++) if (others[i].bike === brain.tracked) { tr = others[i]; break; }
-    if (!tr || tr.bike.crashed || tr.s - s > 40) brain.tracked = null;
-    else if (tr.s - s < -2) { brain.st[brain.trackSwung ? 'contest' : 'pass']++; brain.tracked = null; }
-  } else if (foe && foe.s - s > 1.5 && foe.s - s < 14 && !foe.bike.crashed) { brain.tracked = foe.bike; brain.trackSwung = false; }
-  _pref = clamp(_pref, minD, Math.min(maxD, -0.45));
-
   // ---------- obstacles: bikes and cars around us ----------
   _nT = 0;
   // patience: held up behind something for a few seconds, a rider takes a tighter gap past another bike (up to 0.2 m less side clearance); past a car it never does (the car's body is 1.3 m
@@ -315,6 +308,95 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
       consider(ds, c.d, c.vs, (c.hit ? Math.max(c.len, c.wid) : c.wid) * 0.5 + 0.9, c.len * 0.5); // (a wreck tumbles: its clearance is its length)
     }
   }
+  // the whole road is the racing surface while no oncoming car is inside the window, and none would meet us before we are past a slower vehicle that is about to hold us up
+  // (out there we would have to get back in behind it: the window of its pass is the one that counts then)
+  const wide = 1 + ROAM_SIGHT_K * (1 - diff.sight), outNow = d > LANE_D;
+  if (brain.lineD !== brain.lineD) brain.lineD = brain.laneD; // (the first tick: on its home line)
+  if (brain.tgtD !== brain.tgtD) brain.tgtD = brain.lineD;
+  if (brain.lineS !== brain.lineS) brain.lineS = brain.lineD;
+  const roam0 = laneClear(0, 0, 0, outNow, wide); // (no oncoming car inside the plain window)
+  let roam = roam0;
+  for (let i = 0; roam && i < _nT; i++) {
+    if (T_DS[i] <= 0 || T_VO[i] < 0) continue;
+    const cl = v - T_VO[i];
+    if (cl > 1.5 * K && T_GAP[i] < cl * ROAM_HOLD_T + 20 && !laneClear(T_GAP[i], cl, T_HALF[i] * 2, outNow, wide)) roam = false;
+  }
+  const hiD = roam ? maxD : Math.min(maxD, -0.45);
+  { const drift = (brain.lineS > LANE_D && brain.lineD <= LANE_D ? diff.laneRate : ROAM_DRIFT) * dt; brain.lineS += clamp(brain.lineD - brain.lineS, -drift, drift); }
+  _pref = brain.lineS + brain.wobble * Math.sin((ctx.raceT || 0) * 0.35 + brain.wobPhase);
+  // mistakes (easy): now and then brake too early for a moment, or run wide to the right-hand edge
+  let mistakeBrake = false;
+  if (diff.mistakeEvery > 0 && ctx.racing) {
+    brain.mT -= dt;
+    if (brain.mT <= 0) { brain.mKind = brain.mrand() < 0.5 ? 0 : 1; brain.mLeft = 1 + 1.2 * brain.mrand(); brain.mT = diff.mistakeEvery * (0.6 + 0.8 * brain.mrand()); }
+    if (brain.mLeft > 0) { brain.mLeft -= dt; if (brain.mKind === 0) mistakeBrake = true; else _pref = -(hw - 1.1); }
+  }
+  // who contests our position: the rider ahead in our line that we are not faster than by much (foe), a rider coming up behind in our line (chaser)
+  let foe = null, foeSc = 1e9, chaser = null, chaseSc = 1e9, mate = null, mateSc = 1e9;
+  const fast = (ob) => ob.speed > v - 1.5;
+  for (let i = 0; i < others.length; i++) {
+    const o = others[i], ob = o.bike;
+    if (ob === bike || ob.crashed || o.finished) continue;
+    const ds = o.s - s;
+    if (ds > 30 || ds < -30) continue;
+    const lat = o.d - d, al = lat < 0 ? -lat : lat;
+    if (ds < PRESS_AHEAD && ds > -PRESS_BACK && al > 0.3 && al < PRESS_REACH && (o.d <= LANE_D || roam) && (ob.speed - v < 3 * K && ob.speed - v > -3 * K)) { const sc = al + 0.25 * (ds < 0 ? -ds : ds); if (sc < mateSc) { mateSc = sc; mate = o; } } // (alongside or a bike length or two off, at about our pace: the road is contested)
+    if (al > 2.8) continue;
+    if (ds > -1.2) { const sc = (ds < 1.2 ? -4 : ds) + 3 * al; if (sc < foeSc) { foeSc = sc; foe = o; } }
+    if (ds < -1.2 && ds > -26 && al < 3.2 && fast(ob)) { const sc = -ds + 3 * al; if (sc < chaseSc) { chaseSc = sc; chaser = o; } }
+  }
+  // covering: a rider coming up behind in our line is blocked, once we have reacted (into the oncoming half too while it is clear): we take the line the chaser is taking and
+  // follow its sideways move (where it will be in a moment, not where it was), at the level's cover rate; the level scales how much
+  brain.covering = false;
+  if (chaser && diff.defend > 0 && !brain.done) {
+    brain.chaseT += dt;
+    if (brain.chBike === chaser.bike) brain.chVd += ((chaser.d - brain.chD) / dt - brain.chVd) * 0.3; else brain.chVd = 0;
+    brain.chBike = chaser.bike; brain.chD = chaser.d;
+    if (brain.chaseT >= diff.react) {
+      const aim = chaser.d + clamp(brain.chVd, -4, 4) * COVER_LEAD;
+      _pref += (clamp(aim, minD, roam ? maxD : -0.7) - _pref) * diff.defend; brain.covering = true;
+      if (brain.chaseT - dt < diff.react) brain.st.block++;
+    }
+  } else { brain.chaseT = 0; brain.chBike = null; brain.chVd = 0; }
+  // pressing: the rider alongside moves away while it is still within reach of us: we follow it across (at the level's press share and rate) and swing sooner, so that moving aside
+  // does not get it out of the fight. Only while it is within reach (<= 2.8 m, level with us): once it is clearly gone the move stops (no pursuit). It costs the other rider no speed.
+  brain.pressing = false;
+  if (mate && diff.press > 0 && !brain.done && !(bike.offBal > 0)) {
+    const lat = mate.d - d, sg = lat > 0 ? 1 : -1;
+    if (brain.mateB === mate.bike) brain.mateVd += ((mate.d - brain.mateD) / dt - brain.mateVd) * 0.3; else { brain.mateVd = 0; brain.mateT = 0; brain.pressOn = false; brain.mateEv = 0; }
+    brain.mateB = mate.bike; brain.mateD = mate.d; brain.mateT += dt;
+    // it begins when the rider's sideways speed is away from us (a deliberate move, not the wobble of a line) and goes on until the rival has closed to about a bike's reach (1 m),
+    // the rider comes back toward us by itself, or it is out of the box (above). The rival then goes back to its own line: nothing here follows a rider that has settled elsewhere
+    const al = lat < 0 ? -lat : lat;
+    // a rider that keeps getting out of our way (its sideways moves are away from us, move after move) is evading us; one that moves about for its own reasons (a car, its line) is not
+    const away = brain.mateVd * sg;
+    if (away > 0.3 || away < -0.3) brain.mateEv += ((away > 0 ? 1 : -1) - brain.mateEv) * 0.04;
+    if (away > 0.5 && brain.mateEv > PRESS_EVADE) brain.pressOn = true; else if (brain.mateVd * sg < -0.5 || al <= PRESS_GAP + 0.15) brain.pressOn = false;
+    if (brain.pressOn && brain.mateT >= diff.react) {
+      if (!brain.pressWas) brain.st.press++;
+      brain.pressing = true;
+      const aim = mate.d - sg * PRESS_GAP + clamp(brain.mateVd, -4, 4) * 0.35;
+      _pref += (clamp(aim, minD, roam ? maxD : -0.7) - _pref) * diff.press;
+    }
+  } else { brain.mateB = null; brain.mateVd = 0; brain.mateT = 0; brain.pressOn = false; brain.mateEv = 0; }
+  brain.pressWas = brain.pressing;
+  // an episode of approaching a rider and passing it (clean: no blow thrown meanwhile; contested: there was a fight)
+  if (brain.tracked) {
+    let tr = null;
+    for (let i = 0; i < others.length; i++) if (others[i].bike === brain.tracked) { tr = others[i]; break; }
+    if (!tr || tr.bike.crashed || tr.s - s > 40) brain.tracked = null;
+    else if (tr.s - s < -2) { brain.st[brain.trackSwung ? 'contest' : 'pass']++; brain.tracked = null; }
+  } else if (foe && foe.s - s > 1.5 && foe.s - s < 14 && !foe.bike.crashed) { brain.tracked = foe.bike; brain.trackSwung = false; }
+  _pref = clamp(_pref, minD, hiD);
+
+  // ---------- the racing line: a live choice from the whole tarmac, re-decided every think tick (a line out in the oncoming half is dropped at once when it closes) ----------
+  brain.lineT -= dt;
+  if (brain.lineT <= 0 || (brain.lineD > LANE_D && !roam)) {
+    brain.lineT = Math.max(diff.react, 1 / 60);
+    const old = brain.lineD;
+    brain.lineD = chooseLine(brain, spec, roam, minD, maxD, paceOf(brain, spec, bst));
+    if (brain.lineD > LANE_D && old <= LANE_D) brain.st.roam++;
+  }
   let tgt = _pref, cap = Infinity;
   if (_nT > 0) {
     // nearest object ahead, for the lane-window test and emergency rule
@@ -328,6 +410,7 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
       const ttc = T_GAP[i] / (v - T_VO[i] + 1e-3);
       if (ttc < 3.2 && ((T_OD[i] - d) < 0 ? d - T_OD[i] : T_OD[i] - d) < T_CLR[i] + 0.6) { threat = true; break; }
     }
+    const roamAllowed = roam && brain.lineD > LANE_D && !threat; // the rival's live line is out in the oncoming half and it is clear: lines out there need no pass window
     let laneOk = true, emergency = false;
     // the think tick: a blocked rival re-decides every `react` seconds (Easy slowest, Hard at once): it only notices that the oncoming lane has opened up on such a tick
     // (a lane it has seen as open stays open to it while it is; one that closes is dropped at once)
@@ -337,7 +420,7 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
     if (nearest >= 0) {
       const cl = v - T_VO[nearest];
       emergency = T_GAP[nearest] < Math.max(0, cl) * 1.15 + 6;
-      const fresh = emergency || brain.commitT > 0 || laneClear(T_GAP[nearest], cl, T_HALF[nearest] * 2, d > LANE_D);
+      const fresh = (emergency && roam0) || (brain.commitT > 0 && d > LANE_D) || laneClear(T_GAP[nearest], cl, T_HALF[nearest] * 2, d > LANE_D);
       if (fresh && (decide || brain.laneSeen || emergency || brain.commitT > 0)) brain.laneSeen = true; else brain.laneSeen = false;
       laneOk = brain.laneSeen;
     }
@@ -362,12 +445,12 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
       }
       const cuts = cutsLine(c, d, v); // (never cut across the front of a car we are still overtaking)
       const lane = c > LANE_D;
-      if (c > 0.7) continue; // (the middle strip only: the oncoming cars drive at 2.5 m, further left is their line)
-      if (!far && (!lane || laneOk)) freeFar = true;
+      if (c > 0.7 && !roamAllowed) continue; // (a pass uses the middle strip only: the oncoming cars drive at 2.5 m, further left is their line; a rival roaming out there has the whole half while it is clear)
+      if (!far && (!lane || laneOk || roamAllowed)) freeFar = true;
       if (near || cuts) continue;
-      if (lane && (!laneOk || shMode)) continue;
+      if (lane && ((!laneOk && !roamAllowed) || shMode)) continue;
       // the oncoming lane is the preferred way past when it is safe: its cost is the level's fixed price, not the distance from the line the rider keeps (a gap on the tarmac that needs a real sideways move costs more)
-      const cost = lane ? 0.8 * brain.diff.laneCost + 0.12 * (c - brain.tgtD) * (c - brain.tgtD) : (c - _pref) * (c - _pref) + 0.12 * (c - brain.tgtD) * (c - brain.tgtD);
+      const cost = lane && !roamAllowed ? 0.8 * brain.diff.laneCost + 0.12 * (c - brain.tgtD) * (c - brain.tgtD) : (c - _pref) * (c - _pref) + 0.12 * (c - brain.tgtD) * (c - brain.tgtD);
       if (cost < bestCost) { bestCost = cost; best = c; }
     }
     // held up with nothing free on the road (no gap beside the blocker, no safe pass through the oncoming lane): after a few seconds take the shoulder for a short pass,
@@ -555,8 +638,10 @@ export function rivalInput(brain, bike, others, dt, out, ctx) {
       if (ds > 2.2 || ds < -2.2) continue;
       const lat = o.d - d, al = lat < 0 ? -lat : lat;
       if (al < 0.35 || al > 2.6) continue;
-      if (o.kind === 'ai' && (o.d > LANE_D || o.d < -(hw - 0.9))) continue; // a rival in the oncoming lane (mid-pass), within a metre of the tarmac's edge or on the shoulder (a pass) is not hit by another rival: a blow there is a wreck (off balance and off the tarmac)
       const side = lat > 0 ? 1 : -1;
+      // a rival within a metre of the tarmac's edge or on the shoulder (a pass) is not hit by another rival: a blow there is a wreck (off balance and off the tarmac); nor one in the oncoming half unless that is clear
+      // (no oncoming car inside our window) and the shove does not reach a car that is coming or the edge
+      if (o.kind === 'ai' && (o.d < -(hw - 0.9) || (o.d > LANE_D && (!roam || o.d > hw - 0.9 || hazardOf(o, side, ctx) >= 0.5)))) continue;
       const fg = o.kind !== 'ai' ? RIVAL_REACH : false; // (at a human: a longer reach on the rival's own arc, as Race.swingAt resolves it)
       let hP = meleeHit(bike, ob, 'punch', side, fg), hK = meleeHit(bike, ob, 'kick', side, fg);
       // a rival does not shove another rival into a car, the oncoming lane or off the tarmac with a wheel kick (that is for a human it wants to put out of the race: the level's `sight`); it fights its fellow riders for the road, it does not wreck them

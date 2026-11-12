@@ -14,9 +14,9 @@ export const DEFAULT_DIFFICULTY = 'medium';
  *  paceSpread  half-width of the band of shares inside a level (slot dependent): narrow, so the field bunches
  *  corner      multiplier on the share of the ideal (lean-limited) corner speed it carries
  *  brake       multiplier on its braking confidence (planned deceleration into corners; lower = brakes earlier)
- *  clearK      overtaking: size of the oncoming-lane window it wants clear before pulling out (higher = more timid)
+ *  clearK      overtaking: size of the oncoming-lane window it wants clear before pulling out (higher = more timid); the same window decides when the oncoming half is open as a racing line (RivalAI roam), so Easy ventures across less and returns earlier
  *  pullK       overtaking: how far behind a slower rider it pulls out (higher = earlier, more timid)
- *  laneCost    overtaking: cost of using the centre / oncoming lane (higher = stays behind longer)
+ *  laneCost    overtaking: cost of using the centre / oncoming lane (higher = stays behind longer); its square is also the price of a racing line out in the oncoming half (RivalAI chooseLine)
  *  wobble      multiplier on lane-keeping wobble (precision: lower = a straighter, tidier line)
  *  laneRate    lateral target slew rate, m/s (reaction speed of lane changes)
  *  swingStart  race seconds before the AI may start swinging
@@ -39,7 +39,7 @@ export const DEFAULT_DIFFICULTY = 'medium';
  *  rbBehind    rubber band: speed-up at rbRange (or more) behind the best human
  *  aiBoost     catch-up boost (extra acceleration and top speed, like the humans' place boost) of a rival 30..180 m behind the best human
  *  strag       catch-up boost of a rival 150..450 m behind the race leader (whoever it is): stragglers rejoin the field
- *  clearM      overtaking: safety margin (m) it keeps between itself and an oncoming car it has passed through the oncoming lane before
+ *  clearM      overtaking: safety margin (m) it keeps between itself and an oncoming car it has passed through the oncoming lane before (and while it roams there)
  *  mistakeEvery  mean seconds between mistakes (brake too early / run wide); 0 = never
  *  weapon      cut-offs of a rival's fixed random draw: below the second value the rival punches, above it kicks
  */
@@ -49,12 +49,12 @@ export const DIFFICULTY = {
     swingStart: 12, swingCd: 2, swingP: 0.4, react: 0.7, take: 0.25, sight: 0, backOut: 0.5, defend: 0, cover: 2.4, squeeze: 0, press: 0, pressRate: 2.4, hold: 0, match: 0.97, rbRange: 120, rbAhead: 0.32, rbBehind: 0.1, aiBoost: 0.03, strag: 0.05, mistakeEvery: 24, weapon: [0.78, 0.96],
   },
   medium: {
-    id: 'medium', label: 'Medium', pace: 0.905, paceSpread: 0.02, corner: 0.87, brake: 0.92, clearK: 1, clearM: 16, pullK: 0.95, laneCost: 1, wobble: 0.6, laneRate: 3.7,
+    id: 'medium', label: 'Medium', pace: 0.89, paceSpread: 0.02, corner: 0.85, brake: 0.92, clearK: 1, clearM: 16, pullK: 0.95, laneCost: 1, wobble: 0.6, laneRate: 3.7,
     swingStart: 6, swingCd: 1, swingP: 1, react: 0.22, take: 0.6, sight: 0.6, backOut: 0.3, defend: 0.85, cover: 7, squeeze: 0.5, press: 0.4, pressRate: 4.5, hold: 0.7, match: 0.97, rbRange: 60, rbAhead: 0.28, rbBehind: 0.24, aiBoost: 0.13, strag: 0.08, mistakeEvery: 0, weapon: [0.45, 0.78],
   },
   hard: {
-    id: 'hard', label: 'Hard', pace: 0.95, paceSpread: 0.01, corner: 1.05, brake: 1.03, clearK: 0.9, clearM: 10, pullK: 0.9, laneCost: 0.6, wobble: 0.4, laneRate: 3.8,
-    swingStart: 3, swingCd: 0.6, swingP: 1.7, react: 0.05, take: 1, sight: 1, backOut: 0.12, defend: 1, cover: 10, squeeze: 1, press: 0.7, pressRate: 6, hold: 1, match: 0.95, rbRange: 45, rbAhead: 0.275, rbBehind: 0.28, aiBoost: 0.16, strag: 0.1, mistakeEvery: 0, weapon: [0.2, 0.55],
+    id: 'hard', label: 'Hard', pace: 0.95, paceSpread: 0.01, corner: 1.0, brake: 1.03, clearK: 0.9, clearM: 10, pullK: 0.9, laneCost: 0.6, wobble: 0.4, laneRate: 3.8,
+    swingStart: 3, swingCd: 0.6, swingP: 1.7, react: 0.05, take: 1, sight: 1, backOut: 0.12, defend: 1, cover: 10, squeeze: 1, press: 0.7, pressRate: 6, hold: 1, match: 0.95, rbRange: 60, rbAhead: 0.279, rbBehind: 0.26, aiBoost: 0.14, strag: 0.1, mistakeEvery: 0, weapon: [0.2, 0.55],
   },
 };
 

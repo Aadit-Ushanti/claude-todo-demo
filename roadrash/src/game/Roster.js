@@ -138,7 +138,7 @@ const CRUISE_SCALE = SPEED_SCALE;
  * @param {number} slot grid slot 0..14
  * @param {string} [difficulty] level id; only the weapon mix depends on it (harder = more kickers)
  * @returns {{slot:number, specId:string, cruise:number, pace01:number, aggression:number, weapon:string, laneD:number, cornerG:number, brakeG:number, wobble:number}}
- *   cruise: legacy m/s the rider held on a clear straight (the brain now paces as a share of its bike's top speed, see Difficulty.js / RivalAI.paceOf); pace01: the rider's 0..1 draw inside the level's narrow pace band; aggression 0..1; laneD: preferred lateral offset (negative = right of centre);
+ *   cruise: legacy m/s the rider held on a clear straight (the brain now paces as a share of its bike's top speed, see Difficulty.js / RivalAI.paceOf); pace01: the rider's 0..1 draw inside the level's narrow pace band; aggression 0..1; laneD: home lateral offset, -3.6..3.6 (negative = right of centre; positive = the oncoming half): the tie-breaker among otherwise equal lines;
  *   cornerG / brakeG: share of the bike's lean-limited cornering / braking capability it uses
  */
 export function personality(slot, difficulty = 'medium') {
@@ -152,7 +152,7 @@ export function personality(slot, difficulty = 'medium') {
   const weapon = w < cut[1] ? WEAPON_IDS[0] : WEAPON_IDS[1]; // most rivals punch; the share of kickers grows with the level
   return {
     slot, specId, cruise, pace01, aggression, weapon,
-    laneD: -0.9 - 2.5 * r(),
+    laneD: -3.6 + 7.2 * r(), // the home line, over the full width of the tarmac (negative = own side, positive = the oncoming half): only the tie-breaker of the live line choice (RivalAI)
     cornerG: 0.6 + 0.2 * r(),
     brakeG: 0.4 + 0.12 * r(),
     wobble: 0.1 + 0.3 * r(),
